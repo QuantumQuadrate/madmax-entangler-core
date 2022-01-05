@@ -270,7 +270,16 @@ class EntanglerEEM(eem_mod._EEM):
             interface_on_lower=interface_on_lower,
         )
 
-        io_class = {"input": ttl_serdes_7series.Input_8X, "output": ttl_simple.Output}
+        if _ARTIQ_MAJOR_VERSION >= 6:
+            io_class = {
+                "input": ttl_serdes_7series.InOut_8X,
+                "output": ttl_simple.Output,
+            }
+        else:
+            io_class = {
+                "input": ttl_serdes_7series.Input_8X,
+                "output": ttl_simple.Output,
+            }
         num_outputs = entangler_settings.NUM_OUTPUT_CHANNELS
         num_entangler_inputs = entangler_settings.NUM_ENTANGLER_INPUT_SIGNALS
         num_generic_inputs = entangler_settings.NUM_GENERIC_INPUT_SIGNALS
