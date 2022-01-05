@@ -3,10 +3,10 @@
 {
   dynaconf = python3Packages.buildPythonPackage rec {
     pname = "dynaconf";
-    version = "2.2.2";
+    version = "3.1.7";
     src = python3Packages.fetchPypi {
       inherit pname version;
-      sha256 = "4bac78b432e090d8ed66f1c23fb32e03ca91a590bf0a51ac36137e0e45ac31ca";
+      sha256 = "e9d80b46ba4d9372f2f40c812594c963f74178140c0b596e57f2881001fc4d35";
     };
 
     propagatedBuildInputs = with python3Packages; [
