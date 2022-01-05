@@ -11,8 +11,10 @@ jobs:
     strategy:
       matrix:
         nixPath:
+          # stable ARTIQ 6
           - artiq-full=https://nixbld.m-labs.hk/job/artiq/full/artiq-full/latest/download:nixpkgs=channel:nixos-21.05
-          - artiq-full=https://nixbld.m-labs.hk/job/artiq/full/artiq-full/latest/download:nixpkgs=channel:nixos-21.11
+          # beta ARTIQ 7
+          # - artiq-full=https://nixbld.m-labs.hk/job/artiq/full-beta/artiq-full/latest/download:nixpkgs=channel:nixos-21.05
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
