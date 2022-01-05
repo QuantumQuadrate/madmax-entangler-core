@@ -1,4 +1,4 @@
-{ python3Packages, stdenv }:
+{ python3Packages, lib }:
 
 {
   dynaconf = python3Packages.buildPythonPackage rec {
@@ -18,7 +18,7 @@
 
     doCheck = false;
 
-    meta = with stdenv.lib; {
+    meta = with lib; {
       homepage = "https://github.com/rochacbruno/dynaconf";
       description = "The dynamic configurator for your Python Project";
       license = licenses.mit;
