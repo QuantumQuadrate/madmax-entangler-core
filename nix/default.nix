@@ -27,7 +27,6 @@ in
       entangler-deps.dynaconf
       artiqpkgs.migen
       artiqpkgs.misoc
-      pkgs.python3Packages.setuptools # setuptools needed for ``import pkg_resources`` to find settings.toml
     ];
 
     doCheck = true;
