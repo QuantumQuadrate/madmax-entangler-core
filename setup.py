@@ -16,5 +16,5 @@ if __name__ == "__main__":
         tests_require=["pytest"],
         package_data={
             "": ["*.txt", "*.toml", "*.md"],
-        }
+        },
     )
