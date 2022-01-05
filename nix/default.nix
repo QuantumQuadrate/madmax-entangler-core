@@ -27,6 +27,7 @@ in
       entangler-deps.dynaconf
       artiqpkgs.migen
       artiqpkgs.misoc
+      python3Packages.jsonschema
     ];
 
     doCheck = true;
