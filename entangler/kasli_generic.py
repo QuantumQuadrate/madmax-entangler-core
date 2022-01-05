@@ -36,7 +36,7 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
             "ports": [list of ints],
             {OPTIONAL} "uses_reference": bool,
             {OPTIONAL} "running_output": bool
-            {OPTIONAL} "link_eem": int,
+            {OPTIONAL} "link_eem": [list of ints],
             {OPTIONAL} "interface_on_lower": bool,
         }
 
@@ -79,7 +79,22 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
 
 # add entangler processor to the Kasli EEM JSON processors
 if _ARTIQ_MAJOR_VERSION >= 6:
+    import json
+    import pathlib
+
+    import mergedeep
+
+    import artiq.coredevice.jsondesc as artiq_jsondesc
     import artiq.gateware.eem_7series as eem_7series
+
+    # merge Entangler Schema into default ARTIQ schema
+    mergedeep.merge(
+        artiq_jsondesc.schema,
+        json.loads(
+            pathlib.Path(__file__).with_name("entangler_eem.schema.json").read_text()
+        ),
+        strategy=mergedeep.Strategy.TYPESAFE_ADDITIVE,
+    )
 
     eem_7series.peripheral_processors["entangler"] = peripheral_entangler
 elif _ARTIQ_MAJOR_VERSION == 5:
