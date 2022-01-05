@@ -52,8 +52,10 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
     if running_signal:
         num_outputs += 1
 
-    num_eem = len(peripheral["ports"]) + len(peripheral.get("link_eem", list()))
-    if peripheral.get("link_eem", None) is not None:
+    num_eem = len(peripheral["ports"]) + (
+        1 if peripheral.get("link_eem") is not None else 0
+    )
+    if peripheral.get("link_eem") is not None:
         # Using inter-Kasli/Entangler communication
         num_link_pins = 5 if using_ref else 4
     else:
@@ -70,7 +72,7 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
     EntanglerEEM.add_std(
         module,
         eem_dio=peripheral["ports"],
-        eem_interface=peripheral.get("link_eem", None),
+        eem_interface=peripheral.get("link_eem"),
         uses_reference=using_ref,
         running_output=running_signal,
         interface_on_lower=peripheral.get("interface_on_lower", True),
@@ -79,9 +81,25 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
 
 # add entangler processor to the Kasli EEM JSON processors
 if _ARTIQ_MAJOR_VERSION >= 6:
+    import json
+    import pathlib
+
+    import mergedeep
+
+    import artiq.coredevice.jsondesc as artiq_jsondesc
     import artiq.gateware.eem_7series as eem_7series
 
+    # merge Entangler Schema into default ARTIQ schema
+    mergedeep.merge(
+        artiq_jsondesc.schema,
+        json.loads(
+            pathlib.Path(__file__).with_name("entangler_eem.schema.json").read_text()
+        ),
+        strategy=mergedeep.Strategy.TYPESAFE_ADDITIVE,
+    )
+
     eem_7series.peripheral_processors["entangler"] = peripheral_entangler
+    default_iostandard = eem_mod.default_iostandard
 elif _ARTIQ_MAJOR_VERSION == 5:
     try:
         kasligen.peripheral_processors["entangler"] = peripheral_entangler
@@ -89,6 +107,8 @@ elif _ARTIQ_MAJOR_VERSION == 5:
         raise ImportError(
             "Likely outdated ARTIQ version. Check your ARTIQ version includes PR #1426"
         ) from exc
+
+    default_iostandard = "LVDS_25"
 
 
 # pylint: disable=protected-access
@@ -105,7 +125,7 @@ class EntanglerEEM(eem_mod._EEM):
         eem_interface: int = None,
         uses_reference: bool = False,
         interface_on_lower: bool = True,
-        iostandard: str = "LVDS_25",
+        iostandard: typing.Union[str, IOStandard] = default_iostandard,
     ) -> typing.Sequence["Pad_Assignments"]:
         """Define the IO pins used by the Entangler device.
 
@@ -138,7 +158,7 @@ class EntanglerEEM(eem_mod._EEM):
         if not isinstance(eem_dio, list):
             eem_dio = [eem_dio]
         for eem in eem_dio:
-            ios.extend(eem_mod.DIO.io(eem))
+            ios.extend(eem_mod.DIO.io(eem, iostandard))
         if eem_interface is not None:
             if not uses_reference:
                 num_interface_pads = 4
@@ -252,7 +272,16 @@ class EntanglerEEM(eem_mod._EEM):
             interface_on_lower=interface_on_lower,
         )
 
-        io_class = {"input": ttl_serdes_7series.Input_8X, "output": ttl_simple.Output}
+        if _ARTIQ_MAJOR_VERSION >= 6:
+            io_class = {
+                "input": ttl_serdes_7series.InOut_8X,
+                "output": ttl_simple.Output,
+            }
+        else:
+            io_class = {
+                "input": ttl_serdes_7series.Input_8X,
+                "output": ttl_simple.Output,
+            }
         num_outputs = entangler_settings.NUM_OUTPUT_CHANNELS
         num_entangler_inputs = entangler_settings.NUM_ENTANGLER_INPUT_SIGNALS
         num_generic_inputs = entangler_settings.NUM_GENERIC_INPUT_SIGNALS
