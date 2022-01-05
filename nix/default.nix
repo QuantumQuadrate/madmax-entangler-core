@@ -25,9 +25,10 @@ in
     propagatedBuildInputs = [
       artiqpkgs.artiq
       entangler-deps.dynaconf
+      python3Packages.jsonschema
+      python3Packages.mergedeep
       artiqpkgs.migen
       artiqpkgs.misoc
-      python3Packages.jsonschema
     ];
 
     doCheck = true;
