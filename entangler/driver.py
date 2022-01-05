@@ -14,7 +14,7 @@ from artiq.language.types import TInt64
 from artiq.language.types import TList
 from artiq.language.types import TTuple
 
-import entangler.phy
+from entangler.phy_registers import ADDRESS_READ, ADDRESS_WRITE
 from entangler.config import settings
 
 
@@ -54,8 +54,8 @@ class Entangler:
         self.num_outputs = settings.NUM_OUTPUT_CHANNELS
         self.num_inputs = settings.NUM_ENTANGLER_INPUT_SIGNALS
         self._SEQUENCER_TIME_MASK = (1 << settings.FULL_COUNTER_WIDTH) - 1
-        self._ADDRESS_WRITE = entangler.phy.ADDRESS_WRITE
-        self._ADDRESS_READ = entangler.phy.ADDRESS_READ
+        self._ADDRESS_WRITE = ADDRESS_WRITE
+        self._ADDRESS_READ = ADDRESS_READ
         self._NUM_ALLOWED_PATTERNS = settings.NUM_PATTERNS_ALLOWED
         self._PATTERN_LENGTH_MASK = (1 << settings.NUM_PATTERNS_ALLOWED) - 1
         self._PATTERN_WIDTH = settings.NUM_ENTANGLER_INPUT_SIGNALS
