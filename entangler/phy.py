@@ -24,6 +24,7 @@ def max_value_to_bit_width(max_value: int) -> int:
     """Calculate how many bits are needed to represent an unsigned int."""
     return math.ceil(math.log2(max_value))
 
+
 _num_channels = settings.NUM_ENTANGLER_INPUT_SIGNALS + settings.NUM_OUTPUT_CHANNELS
 _channel_bits = max_value_to_bit_width(_num_channels)
 _read_start = 0b1 << (_channel_bits + 1)

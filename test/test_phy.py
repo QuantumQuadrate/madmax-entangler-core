@@ -20,6 +20,7 @@ from phytester import PhyTestHarness  # noqa: E402 pylint: disable=import-error
 
 _LOGGER = logging.getLogger(__name__)
 
+
 def basic_phy_check(dut: PhyTestHarness):
     """Test the entire :mod:`entangler` gateware basic functionality works."""
     _LOGGER.debug("Starting basic_phy_check")
@@ -28,7 +29,9 @@ def basic_phy_check(dut: PhyTestHarness):
     yield dut.input_phys[1].t_event.eq(1000)
 
     yield from advance_clock(5)
-    yield from dut.write(entangler.phy.ADDRESS_WRITE.CONFIG, 0b110)  # standalone, master, disable
+    yield from dut.write(
+        entangler.phy.ADDRESS_WRITE.CONFIG, 0b110
+    )  # standalone, master, disable
     yield from dut.write_heralds([0b0101, 0b1010, 0b1100, 0b0101])
     for i in range(settings.NUM_OUTPUT_CHANNELS):
         # set outputs to be on for 1 coarse clock cycle
@@ -56,10 +59,14 @@ def basic_phy_check(dut: PhyTestHarness):
     yield
     yield from dut.write(entangler.phy.ADDRESS_READ.NCYCLES, 0)  # Read n_cycles
     yield
-    yield from dut.write(entangler.phy.ADDRESS_READ.TIME_REMAINING, 0)  # Read time elapsed
+    yield from dut.write(
+        entangler.phy.ADDRESS_READ.TIME_REMAINING, 0
+    )  # Read time elapsed
     yield
     for i in range(5):
-        yield from dut.write(entangler.phy.ADDRESS_READ.TIMESTAMP + i, 0)  # Read input timestamps
+        yield from dut.write(
+            entangler.phy.ADDRESS_READ.TIMESTAMP + i, 0
+        )  # Read input timestamps
         yield
     yield from advance_clock(5)
 
@@ -77,7 +84,9 @@ def check_phy_timeout(dut: PhyTestHarness):
             entangler.phy.ADDRESS_WRITE.CONFIG, 0b110
         )  # disable, standalone
         yield from dut.write(entangler.phy.ADDRESS_WRITE.TCYCLE, n_cycles)
-        yield from dut.write(entangler.phy.ADDRESS_WRITE.CONFIG, 0b111)  # Enable standalone
+        yield from dut.write(
+            entangler.phy.ADDRESS_WRITE.CONFIG, 0b111
+        )  # Enable standalone
         yield from dut.write(entangler.phy.ADDRESS_WRITE.RUN, timeout)
 
         timedout = False
@@ -106,7 +115,10 @@ def phy_dut() -> PhyTestHarness:
 ARTIQ_CLOCKS = {"sys": 8, "rio": 8, "rio_phy": 8}
 
 
-@pytest.mark.parametrize("test_function", [basic_phy_check, check_phy_timeout],)
+@pytest.mark.parametrize(
+    "test_function",
+    [basic_phy_check, check_phy_timeout],
+)
 def test_phy_func(request, phy_dut: PhyTestHarness, test_function):
     """Run test functions on an Entangler PHY."""
     run_simulation(

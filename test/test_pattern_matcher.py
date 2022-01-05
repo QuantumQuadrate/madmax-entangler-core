@@ -81,5 +81,7 @@ if __name__ == "__main__":
     num_signals = settings.NUM_ENTANGLER_INPUT_SIGNALS
     dut = PatternMatcher(num_inputs=num_signals, num_patterns=num_patterns)
     run_simulation(
-        dut, check_all_possible_patterns(dut), vcd_name="heralder.vcd",
+        dut,
+        check_all_possible_patterns(dut),
+        vcd_name="heralder.vcd",
     )

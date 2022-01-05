@@ -314,7 +314,7 @@ class EntanglerEEM(eem_mod._EEM):
             _LOGGER.info(
                 "Assigned running output to %s-%d",
                 pads.name,
-                (len(output_pads)-1) % 8
+                (len(output_pads) - 1) % 8,
             )
 
         # Create specified # of inputs, add them to list for Entangler creation.

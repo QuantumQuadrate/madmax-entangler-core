@@ -224,7 +224,9 @@ def test_phy_basic(request, ip_phy: PhyTestHarness):
             assert bool((yield msm.standalone))
 
             cycle_len_coarse = int(cycle_len_ns / COARSE_CLOCK_PERIOD_NS)
-            yield from ip_phy.write(entangler.phy.ADDRESS_WRITE.TCYCLE, cycle_len_coarse)
+            yield from ip_phy.write(
+                entangler.phy.ADDRESS_WRITE.TCYCLE, cycle_len_coarse
+            )
             assert (yield msm.cycle_length_input) == cycle_len_coarse
 
             runtime = cycle_len_coarse * cycles_until_timeout
@@ -258,7 +260,9 @@ def test_phy_basic(request, ip_phy: PhyTestHarness):
             triggers = [0]
             timestamps = [[0]] * settings.NUM_ENTANGLER_INPUT_SIGNALS
 
-            yield from ip_phy.read(entangler.phy.ADDRESS_READ.TIME_REMAINING, time_remaining)
+            yield from ip_phy.read(
+                entangler.phy.ADDRESS_READ.TIME_REMAINING, time_remaining
+            )
             _LOGGER.debug("Time remaining: %i", time_remaining[0])
             yield from ip_phy.read(entangler.phy.ADDRESS_READ.NCYCLES, cyc_complete)
             yield from ip_phy.read(entangler.phy.ADDRESS_READ.STATUS, status)

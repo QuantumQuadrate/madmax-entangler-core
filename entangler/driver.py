@@ -17,6 +17,7 @@ from artiq.language.types import TTuple
 import entangler.phy
 from entangler.config import settings
 
+
 class Entangler:
     """Sequences remote entanglement experiments between a master and a slave."""
 
@@ -213,7 +214,9 @@ class Entangler:
         data = 0
         assert len(patterns) <= self._NUM_ALLOWED_PATTERNS
         for i in range(len(patterns)):
-            data |= (patterns[i] & self._PATTERN_LENGTH_MASK) << (self._PATTERN_WIDTH * i)
+            data |= (patterns[i] & self._PATTERN_LENGTH_MASK) << (
+                self._PATTERN_WIDTH * i
+            )
             data |= 1 << (self._NUM_ALLOWED_PATTERNS * self._PATTERN_WIDTH + i)
         self._write(self._ADDRESS_WRITE.PATTERNS, data)
 
