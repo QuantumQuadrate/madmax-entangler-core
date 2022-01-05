@@ -7,6 +7,7 @@ from gateware_utils import MockPhy
 from gateware_utils import rtio_output_event
 
 import entangler.phy
+from entangler.phy_registers import ADDRESS_WRITE
 from entangler.config import settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,7 +87,7 @@ class PhyTestHarness(migen.Module):
             )
             # move herald to appropriate position in register
             data |= h << (settings.NUM_ENTANGLER_INPUT_SIGNALS * i)
-        yield from self.write(entangler.phy.ADDRESS_WRITE.PATTERNS, data)
+        yield from self.write(ADDRESS_WRITE.PATTERNS, data)
 
     def set_event_times(
         self, ref_time: int, event_time_offsets: typing.Sequence[int]

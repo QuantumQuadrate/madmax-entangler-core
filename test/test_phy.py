@@ -1,4 +1,4 @@
-"""Test the :class:`entangler.phy.Entangler` functionality."""
+"""Test the :class:`Entangler` functionality."""
 import logging
 import os
 import sys
@@ -6,7 +6,7 @@ import sys
 import pytest
 from migen import run_simulation  # noqa: E402
 
-import entangler.phy
+from entangler.phy_registers import ADDRESS_READ, ADDRESS_WRITE
 from entangler.config import settings
 
 # add gateware simulation tools "module" (at ./helpers/*)
@@ -29,23 +29,21 @@ def basic_phy_check(dut: PhyTestHarness):
     yield dut.input_phys[1].t_event.eq(1000)
 
     yield from advance_clock(5)
-    yield from dut.write(
-        entangler.phy.ADDRESS_WRITE.CONFIG, 0b110
-    )  # standalone, master, disable
+    yield from dut.write(ADDRESS_WRITE.CONFIG, 0b110)  # standalone, master, disable
     yield from dut.write_heralds([0b0101, 0b1010, 0b1100, 0b0101])
     for i in range(settings.NUM_OUTPUT_CHANNELS):
         # set outputs to be on for 1 coarse clock cycle
         yield from dut.write(
-            entangler.phy.ADDRESS_WRITE.TIMING + i, (2 * i + 2) * (1 << 16) | 2 * i + 1
+            ADDRESS_WRITE.TIMING + i, (2 * i + 2) * (1 << 16) | 2 * i + 1
         )
     # for i in [0, 2]:
-    #     yield from dut.write(entangler.phy.ADDRESS_WRITE.TIMING + 4 + i, (30 << 16) | 18)
+    #     yield from dut.write(ADDRESS_WRITE.TIMING + 4 + i, (30 << 16) | 18)
     # for i in [1, 3]:
-    #     yield from dut.write(entangler.phy.ADDRESS_WRITE.TIMING + 4 + i, (1000 << 16)
+    #     yield from dut.write(ADDRESS_WRITE.TIMING + 4 + i, (1000 << 16)
     #       | 1000)
-    yield from dut.write(entangler.phy.ADDRESS_WRITE.TCYCLE, 30)
-    yield from dut.write(entangler.phy.ADDRESS_WRITE.CONFIG, 0b111)  # Enable standalone
-    yield from dut.write(entangler.phy.ADDRESS_WRITE.RUN, int(2e3 / 8))
+    yield from dut.write(ADDRESS_WRITE.TCYCLE, 30)
+    yield from dut.write(ADDRESS_WRITE.CONFIG, 0b111)  # Enable standalone
+    yield from dut.write(ADDRESS_WRITE.RUN, int(2e3 / 8))
 
     yield from advance_clock(1000)
     # for i in range(1000):
@@ -55,18 +53,14 @@ def basic_phy_check(dut: PhyTestHarness):
     #     #     yield dut.input_phys[1].t_event.eq( 8*10+3 + 30)
     #     yield
 
-    yield from dut.write(entangler.phy.ADDRESS_READ.STATUS, 0)  # Read status
+    yield from dut.write(ADDRESS_READ.STATUS, 0)  # Read status
     yield
-    yield from dut.write(entangler.phy.ADDRESS_READ.NCYCLES, 0)  # Read n_cycles
+    yield from dut.write(ADDRESS_READ.NCYCLES, 0)  # Read n_cycles
     yield
-    yield from dut.write(
-        entangler.phy.ADDRESS_READ.TIME_REMAINING, 0
-    )  # Read time elapsed
+    yield from dut.write(ADDRESS_READ.TIME_REMAINING, 0)  # Read time elapsed
     yield
     for i in range(5):
-        yield from dut.write(
-            entangler.phy.ADDRESS_READ.TIMESTAMP + i, 0
-        )  # Read input timestamps
+        yield from dut.write(ADDRESS_READ.TIMESTAMP + i, 0)  # Read input timestamps
         yield
     yield from advance_clock(5)
 
@@ -80,14 +74,10 @@ def check_phy_timeout(dut: PhyTestHarness):
     # Declare internal helper functions.
     def do_timeout(timeout, n_cycles=10):
         yield
-        yield from dut.write(
-            entangler.phy.ADDRESS_WRITE.CONFIG, 0b110
-        )  # disable, standalone
-        yield from dut.write(entangler.phy.ADDRESS_WRITE.TCYCLE, n_cycles)
-        yield from dut.write(
-            entangler.phy.ADDRESS_WRITE.CONFIG, 0b111
-        )  # Enable standalone
-        yield from dut.write(entangler.phy.ADDRESS_WRITE.RUN, timeout)
+        yield from dut.write(ADDRESS_WRITE.CONFIG, 0b110)  # disable, standalone
+        yield from dut.write(ADDRESS_WRITE.TCYCLE, n_cycles)
+        yield from dut.write(ADDRESS_WRITE.CONFIG, 0b111)  # Enable standalone
+        yield from dut.write(ADDRESS_WRITE.RUN, timeout)
 
         timedout = False
         for i in range(timeout + n_cycles + 50):

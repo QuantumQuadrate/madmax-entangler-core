@@ -115,7 +115,7 @@ This has only been extensively tested with 4 Inputs & 4 Outputs, and 4 Inputs & 
 To test that your configuration works, I recommend running ``pytest ../test/test_ion_photon.py``.
 
 These addresses will be auto-generated based on the contents of [settings.toml](./settings.toml),
-and can be found in [entangler.phy](./phy.py) as ``ADDRESS_READ`` and ``ADDRESS_WRITE``.
+and can be found in [entangler.phy_registers](./phy.py) as ``ADDRESS_READ`` and ``ADDRESS_WRITE``.
 Though they're auto-generated, there's no guarantee that they will work.
 You can also change the number of inputs/outputs using environment variables.
 
