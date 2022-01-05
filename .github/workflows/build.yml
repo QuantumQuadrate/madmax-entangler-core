@@ -27,15 +27,6 @@ jobs:
           trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixbld.m-labs.hk-1:5aSRVA5b320xbNvu30tqxVPXpld73bhtOeH6uAjRyHc=
     - name: Show nixpkgs version
       run: nix-instantiate --eval -E '(import <nixpkgs> {}).lib.version'
-    - name: Check evaluation
-      run: |
-        nix-env -f . -qa \* --meta --xml \
-          --allowed-uris https://static.rust-lang.org \
-          --option restrict-eval true \
-          --option allow-import-from-derivation true \
-          --drv-path --show-trace \
-          -I nixpkgs=$(nix-instantiate --find-file nixpkgs) \
-          -I $PWD
     - name: Build Nix Package
       env:
         # Allow building unfree packages & unsupported systems for CI purposes
