@@ -11,14 +11,16 @@
 let
   entangler-src = ./..;
   entangler-deps = pkgs.callPackage ./entangler-dependencies.nix {};
+  lib = pkgs.lib;
+  python3Packages = pkgs.python3Packages;
 in
-  pkgs.python3Packages.buildPythonPackage rec {
+  python3Packages.buildPythonPackage rec {
     pname = "entangler";
     version = "1.1.1";
 
-    src = entangler-src;
+    src = lib.cleanSource entangler-src;
 
-    buildInputs = with pkgs.python3Packages; [ pytestrunner ];
+    buildInputs = with python3Packages; [ pytestrunner ];
 
     propagatedBuildInputs = [
       artiqpkgs.artiq
@@ -29,13 +31,13 @@ in
     ];
 
     doCheck = true;
-    checkInputs = [ pkgs.python3Packages.pytest ];
-    checkPhase = ''
-      pytest -m 'not slow'
-    '';
+    checkInputs = [ python3Packages.pytestCheckHook ];
+    pytestFlagsArray = [
+      "-m 'not slow'"
+    ];
     pythonImportsCheck = [ pname "${pname}.kasli_generic" "${pname}.driver" "${pname}.phy" ];
 
-    meta = with pkgs.lib; {
+    meta = with lib; {
       description = "ARTIQ extension to generate & check patterns (for entanglement).";
       homepage = "https://github.com/drewrisinger/entangler-core/";
       license = licenses.gpl3;
