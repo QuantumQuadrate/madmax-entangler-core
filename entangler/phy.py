@@ -6,7 +6,6 @@ import typing
 
 import numpy
 from artiq.gateware.rtio import rtlink
-from dynaconf import LazySettings
 from migen import Case
 from migen import Cat
 from migen import ClockDomainsRenamer
@@ -16,9 +15,9 @@ from migen import Mux
 from migen import Signal
 
 from entangler.core import EntanglerCore
+from entangler.config import settings
 
 _LOGGER = logging.getLogger(__name__)
-settings = LazySettings(ROOT_PATH_FOR_DYNACONF=__file__)
 
 # generate the PHY read/write addresses, b/c ARTIQ kernel had issues w/ referencing dynaconf settings
 def max_value_to_bit_width(max_value: int) -> int:

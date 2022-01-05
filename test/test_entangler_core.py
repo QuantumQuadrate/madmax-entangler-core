@@ -5,10 +5,10 @@ import os
 import sys
 import typing
 
-import pkg_resources
 import pytest
-from dynaconf import LazySettings
 from migen import run_simulation
+
+from entangler.config import settings
 
 # add gateware simulation tools "module" (at ./helpers/*)
 sys.path.append(os.path.join(os.path.dirname(__file__), "helpers"))
@@ -20,9 +20,6 @@ from gateware_utils import advance_clock  # noqa: E402
 from gateware_utils import wait_until  # noqa: E402
 
 _LOGGER = logging.getLogger(__name__)
-settings = LazySettings(
-    ROOT_PATH_FOR_DYNACONF=pkg_resources.resource_filename("entangler", "")
-)
 
 
 def int_to_bool_array(val: int, num_binary_digits: int) -> typing.Sequence[bool]:

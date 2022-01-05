@@ -13,12 +13,9 @@ from artiq.language.types import TInt32
 from artiq.language.types import TInt64
 from artiq.language.types import TList
 from artiq.language.types import TTuple
-from dynaconf import LazySettings
 
 import entangler.phy
-
-settings = LazySettings(ROOT_PATH_FOR_DYNACONF=__file__)
-
+from entangler.config import settings
 
 class Entangler:
     """Sequences remote entanglement experiments between a master and a slave."""

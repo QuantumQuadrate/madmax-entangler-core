@@ -1,12 +1,7 @@
 """Minimal ARTIQ Device DB for demonstrating the Entangler."""
-
-import pkg_resources
-from dynaconf import LazySettings
+from entangler.config import settings
 
 # Get default settings from entangler package's settings.toml
-settings = LazySettings(
-    ROOT_PATH_FOR_DYNACONF=pkg_resources.resource_filename("entangler", "")
-)
 # change if your JSON file has this set
 using_running_output = False
 

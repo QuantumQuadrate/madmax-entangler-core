@@ -6,7 +6,6 @@ import logging
 import typing
 
 import migen.build.generic_platform as platform
-from dynaconf import LazySettings
 from migen import Cat
 from migen import FSM
 from migen import If
@@ -17,7 +16,9 @@ from migen import NextState
 from migen import NextValue
 from migen import Signal
 
-settings = LazySettings(ROOT_PATH_FOR_DYNACONF=__file__)
+from entangler.config import settings
+
+
 _LOGGER = logging.getLogger(__name__)
 
 

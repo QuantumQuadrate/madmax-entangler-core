@@ -4,7 +4,6 @@
 # I believe these can be overwritten by setting the same-named environment variable,
 # if you cannot modify this file for some reason.
 
-[development]
 # NOTE: if you would like an "entangler_is_running" output, decrease NUM_OUTPUT_CHANNELS by 1
 NUM_OUTPUT_CHANNELS = 8
 NUM_ENTANGLER_INPUT_SIGNALS = 4

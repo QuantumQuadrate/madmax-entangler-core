@@ -2,26 +2,21 @@
 import os
 import sys
 
-import pkg_resources
 import pytest
-from dynaconf import LazySettings
 from migen import If
 from migen import Module
 from migen import run_simulation
 from migen import Signal
+
+from entangler.config import settings
+from entangler.core import TriggeredInputGater  # noqa: E402
 
 # add gateware simulation tools "module" (at ./helpers/*)
 sys.path.append(os.path.join(os.path.dirname(__file__), "helpers"))
 
 
 #  ./helpers/gateware_utils
-from entangler.core import TriggeredInputGater  # noqa: E402
 from gateware_utils import MockPhy  # noqa: E402 pylint: disable=import-error
-
-
-settings = LazySettings(
-    ROOT_PATH_FOR_DYNACONF=pkg_resources.resource_filename("entangler", "")
-)
 
 
 class TriggeredGaterHarness(Module):

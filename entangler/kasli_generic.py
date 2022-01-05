@@ -15,7 +15,6 @@ import artiq.gateware.rtio as rtio
 import artiq.gateware.targets.kasli_generic as kasligen
 from artiq.gateware.rtio.phy import ttl_serdes_7series
 from artiq.gateware.rtio.phy import ttl_simple
-from dynaconf import LazySettings
 from migen import Signal
 from migen.build.generic_platform import ConstraintError
 from migen.build.generic_platform import IOStandard
@@ -23,9 +22,9 @@ from migen.build.generic_platform import Pins
 from migen.build.generic_platform import Subsignal
 
 import entangler.phy
+from entangler.config import settings as entangler_settings
 
 _LOGGER = logging.getLogger(__name__)
-entangler_settings = LazySettings(ROOT_PATH_FOR_DYNACONF=__file__)
 
 
 def peripheral_entangler(module, peripheral: typing.Dict[str, list]):

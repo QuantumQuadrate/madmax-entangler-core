@@ -5,26 +5,23 @@ import logging
 import os
 import sys
 
-import pkg_resources
 import pytest
-from dynaconf import LazySettings
 from migen import If
 from migen import Module
 from migen import run_simulation
 from migen import Signal
 
+from entangler.core import UntriggeredInputGater  # noqa: E402
+from entangler.config import settings
+
 # add gateware simulation tools "module" (at ./helpers/*)
 sys.path.append(os.path.join(os.path.dirname(__file__), "helpers"))
 
 
-from entangler.core import UntriggeredInputGater  # noqa: E402
+#  ./helpers/gateware_utils
 from gateware_utils import MockPhy  # noqa: E402 pylint: disable=import-error
 
-#  ./helpers/gateware_utils
 _LOGGER = logging.getLogger(__name__)
-settings = LazySettings(
-    ROOT_PATH_FOR_DYNACONF=pkg_resources.resource_filename("entangler", "")
-)
 
 
 class UntriggeredGaterHarness(Module):
