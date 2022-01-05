@@ -1,6 +1,4 @@
 artiq>=5
 dynaconf>=3
 mergedeep
-migen
-misoc
 numpy
