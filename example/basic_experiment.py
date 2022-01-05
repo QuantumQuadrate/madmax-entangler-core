@@ -5,17 +5,13 @@ For demo/example/testing purposes only.
 import artiq.language.environment as artiq_env
 import artiq.language.units as aq_units
 import numpy
-import pkg_resources
-from artiq.language.core import kernel, delay, delay_mu, parallel
+from artiq.language.core import kernel, delay, parallel
 from artiq.language.types import TInt32
-from artiq.coredevice.rtio import rtio_output
-from dynaconf import LazySettings
+
+from entangler.config import settings
 
 
 # Get the number of inputs & outputs from the settings file.
-settings = LazySettings(
-    ROOT_PATH_FOR_DYNACONF=pkg_resources.resource_filename("entangler", "")
-)
 num_inputs = settings.NUM_ENTANGLER_INPUT_SIGNALS
 num_outputs = settings.NUM_OUTPUT_CHANNELS
 

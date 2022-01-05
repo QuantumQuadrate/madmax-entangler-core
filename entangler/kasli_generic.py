@@ -3,9 +3,6 @@
 Effectively adds :mod:`entangler` to kasli_generic builder
 (artiq/gateware/kasli_generic.py) and the EEM module
 (artiq/gateware/eem.py).
-
-This requires that your ARTIQ branch include PR #1426, which is handled
-by the Nix script.
 """
 import logging
 import typing
@@ -13,9 +10,9 @@ import typing
 import artiq.gateware.eem as eem_mod
 import artiq.gateware.rtio as rtio
 import artiq.gateware.targets.kasli_generic as kasligen
+from artiq import __version__ as _artiq_version_str
 from artiq.gateware.rtio.phy import ttl_serdes_7series
 from artiq.gateware.rtio.phy import ttl_simple
-from dynaconf import LazySettings
 from migen import Signal
 from migen.build.generic_platform import ConstraintError
 from migen.build.generic_platform import IOStandard
@@ -23,9 +20,11 @@ from migen.build.generic_platform import Pins
 from migen.build.generic_platform import Subsignal
 
 import entangler.phy
+from entangler.config import settings as entangler_settings
 
 _LOGGER = logging.getLogger(__name__)
-entangler_settings = LazySettings(ROOT_PATH_FOR_DYNACONF=__file__)
+# packaging.version.parse() preferred, but the ARTIQ version is not PEP440 compliant
+_ARTIQ_MAJOR_VERSION = int(_artiq_version_str.split(".")[0])
 
 
 def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
@@ -78,8 +77,18 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
     )
 
 
-# add entangler processor to the standard kasli_generic processors
-kasligen.peripheral_processors["entangler"] = peripheral_entangler
+# add entangler processor to the Kasli EEM JSON processors
+if _ARTIQ_MAJOR_VERSION >= 6:
+    import artiq.gateware.eem_7series as eem_7series
+
+    eem_7series.peripheral_processors["entangler"] = peripheral_entangler
+elif _ARTIQ_MAJOR_VERSION == 5:
+    try:
+        kasligen.peripheral_processors["entangler"] = peripheral_entangler
+    except AttributeError as exc:
+        raise ImportError(
+            "Likely outdated ARTIQ version. Check your ARTIQ version includes PR #1426"
+        ) from exc
 
 
 # pylint: disable=protected-access
@@ -315,7 +324,7 @@ class EntanglerEEM(eem_mod._EEM):
             _LOGGER.info(
                 "Assigned running output to %s-%d",
                 pads.name,
-                (len(output_pads)-1) % 8
+                (len(output_pads) - 1) % 8,
             )
 
         # Create specified # of inputs, add them to list for Entangler creation.

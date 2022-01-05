@@ -13,11 +13,9 @@ from artiq.language.types import TInt32
 from artiq.language.types import TInt64
 from artiq.language.types import TList
 from artiq.language.types import TTuple
-from dynaconf import LazySettings
 
 import entangler.phy
-
-settings = LazySettings(ROOT_PATH_FOR_DYNACONF=__file__)
+from entangler.config import settings
 
 
 class Entangler:
@@ -216,7 +214,9 @@ class Entangler:
         data = 0
         assert len(patterns) <= self._NUM_ALLOWED_PATTERNS
         for i in range(len(patterns)):
-            data |= (patterns[i] & self._PATTERN_LENGTH_MASK) << (self._PATTERN_WIDTH * i)
+            data |= (patterns[i] & self._PATTERN_LENGTH_MASK) << (
+                self._PATTERN_WIDTH * i
+            )
             data |= 1 << (self._NUM_ALLOWED_PATTERNS * self._PATTERN_WIDTH + i)
         self._write(self._ADDRESS_WRITE.PATTERNS, data)
 

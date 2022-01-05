@@ -3,16 +3,12 @@ import logging
 import typing
 
 import migen
-import pkg_resources
-from dynaconf import LazySettings
 from gateware_utils import MockPhy  # pylint: disable=import-error
 
 import entangler.core
+from entangler.config import settings
 
 _LOGGER = logging.getLogger(__name__)
-settings = LazySettings(
-    ROOT_PATH_FOR_DYNACONF=pkg_resources.resource_filename("entangler", "")
-)
 
 
 class CoreTestHarness(migen.Module):

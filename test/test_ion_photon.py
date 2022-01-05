@@ -7,11 +7,10 @@ import sys
 import typing
 
 import migen
-import pkg_resources
 import pytest
-from dynaconf import LazySettings
 
 import entangler.phy
+from entangler.config import settings
 
 # fmt: off
 sys.path.append(os.path.join(os.path.dirname(__file__), "helpers"))
@@ -23,9 +22,6 @@ from phytester import PhyTestHarness    # noqa: E402
 # fmt: on
 
 _LOGGER = logging.getLogger(__name__)
-settings = LazySettings(
-    ROOT_PATH_FOR_DYNACONF=pkg_resources.resource_filename("entangler", "")
-)
 COARSE_CLOCK_PERIOD_NS = 8
 ION_PHOTON_HERALD_PATTERNS = (0b0101, 0b1010, 0b1100, 0b0011)
 
@@ -228,7 +224,9 @@ def test_phy_basic(request, ip_phy: PhyTestHarness):
             assert bool((yield msm.standalone))
 
             cycle_len_coarse = int(cycle_len_ns / COARSE_CLOCK_PERIOD_NS)
-            yield from ip_phy.write(entangler.phy.ADDRESS_WRITE.TCYCLE, cycle_len_coarse)
+            yield from ip_phy.write(
+                entangler.phy.ADDRESS_WRITE.TCYCLE, cycle_len_coarse
+            )
             assert (yield msm.cycle_length_input) == cycle_len_coarse
 
             runtime = cycle_len_coarse * cycles_until_timeout
@@ -262,7 +260,9 @@ def test_phy_basic(request, ip_phy: PhyTestHarness):
             triggers = [0]
             timestamps = [[0]] * settings.NUM_ENTANGLER_INPUT_SIGNALS
 
-            yield from ip_phy.read(entangler.phy.ADDRESS_READ.TIME_REMAINING, time_remaining)
+            yield from ip_phy.read(
+                entangler.phy.ADDRESS_READ.TIME_REMAINING, time_remaining
+            )
             _LOGGER.debug("Time remaining: %i", time_remaining[0])
             yield from ip_phy.read(entangler.phy.ADDRESS_READ.NCYCLES, cyc_complete)
             yield from ip_phy.read(entangler.phy.ADDRESS_READ.STATUS, status)
