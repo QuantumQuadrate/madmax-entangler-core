@@ -97,6 +97,7 @@ if _ARTIQ_MAJOR_VERSION >= 6:
     )
 
     eem_7series.peripheral_processors["entangler"] = peripheral_entangler
+    default_iostandard = eem_mod.default_iostandard
 elif _ARTIQ_MAJOR_VERSION == 5:
     try:
         kasligen.peripheral_processors["entangler"] = peripheral_entangler
@@ -104,6 +105,8 @@ elif _ARTIQ_MAJOR_VERSION == 5:
         raise ImportError(
             "Likely outdated ARTIQ version. Check your ARTIQ version includes PR #1426"
         ) from exc
+
+    default_iostandard = "LVDS_25"
 
 
 # pylint: disable=protected-access
@@ -120,7 +123,7 @@ class EntanglerEEM(eem_mod._EEM):
         eem_interface: int = None,
         uses_reference: bool = False,
         interface_on_lower: bool = True,
-        iostandard: str = "LVDS_25",
+        iostandard: typing.Union[str, IOStandard] = default_iostandard,
     ) -> typing.Sequence["Pad_Assignments"]:
         """Define the IO pins used by the Entangler device.
 
@@ -153,7 +156,7 @@ class EntanglerEEM(eem_mod._EEM):
         if not isinstance(eem_dio, list):
             eem_dio = [eem_dio]
         for eem in eem_dio:
-            ios.extend(eem_mod.DIO.io(eem))
+            ios.extend(eem_mod.DIO.io(eem, iostandard))
         if eem_interface is not None:
             if not uses_reference:
                 num_interface_pads = 4
