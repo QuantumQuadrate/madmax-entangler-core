@@ -36,7 +36,7 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
             "ports": [list of ints],
             {OPTIONAL} "uses_reference": bool,
             {OPTIONAL} "running_output": bool
-            {OPTIONAL} "link_eem": [list of ints],
+            {OPTIONAL} "link_eem": int,
             {OPTIONAL} "interface_on_lower": bool,
         }
 
@@ -52,8 +52,10 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
     if running_signal:
         num_outputs += 1
 
-    num_eem = len(peripheral["ports"]) + len(peripheral.get("link_eem", list()))
-    if peripheral.get("link_eem", None) is not None:
+    num_eem = len(peripheral["ports"]) + (
+        1 if peripheral.get("link_eem") is not None else 0
+    )
+    if peripheral.get("link_eem") is not None:
         # Using inter-Kasli/Entangler communication
         num_link_pins = 5 if using_ref else 4
     else:
@@ -70,7 +72,7 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
     EntanglerEEM.add_std(
         module,
         eem_dio=peripheral["ports"],
-        eem_interface=peripheral.get("link_eem", None),
+        eem_interface=peripheral.get("link_eem"),
         uses_reference=using_ref,
         running_output=running_signal,
         interface_on_lower=peripheral.get("interface_on_lower", True),
