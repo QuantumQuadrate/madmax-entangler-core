@@ -4,12 +4,15 @@ Effectively adds :mod:`entangler` to kasli_generic builder
 (artiq/gateware/kasli_generic.py) and the EEM module
 (artiq/gateware/eem.py).
 """
+import json
 import logging
+import pathlib
 import typing
 
 import artiq.gateware.eem as eem_mod
 import artiq.gateware.rtio as rtio
 import artiq.gateware.targets.kasli_generic as kasligen
+import mergedeep
 from artiq import __version__ as _artiq_version_str
 from artiq.gateware.rtio.phy import ttl_serdes_7series
 from artiq.gateware.rtio.phy import ttl_simple
@@ -79,37 +82,42 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
     )
 
 
-# add entangler processor to the Kasli EEM JSON processors
-if _ARTIQ_MAJOR_VERSION >= 6:
-    import json
-    import pathlib
+def _add_eem_to_artiq_build(artiq_version: int) -> None:
+    """Patch the EEM into the ARTIQ Kasli build process"""
+    if artiq_version in {6, 7}:
+        import artiq.coredevice.jsondesc as artiq_jsondesc
+        import artiq.gateware.eem_7series as eem_7series
 
-    import mergedeep
+        # add entangler processor to the Kasli EEM JSON processors
+        eem_7series.peripheral_processors["entangler"] = peripheral_entangler
 
-    import artiq.coredevice.jsondesc as artiq_jsondesc
-    import artiq.gateware.eem_7series as eem_7series
+        # merge Entangler Schema into default ARTIQ schema
+        mergedeep.merge(
+            artiq_jsondesc.schema,
+            json.loads(
+                pathlib.Path(__file__)
+                .with_name("entangler_eem.schema.json")
+                .read_text()
+            ),
+            strategy=mergedeep.Strategy.TYPESAFE_ADDITIVE,
+        )
+    elif artiq_version == 5:
+        try:
+            kasligen.peripheral_processors["entangler"] = peripheral_entangler
+        except AttributeError as exc:
+            raise ImportError(
+                "Likely outdated ARTIQ version. Check your ARTIQ version includes PR #1426"
+            ) from exc
+    else:
+        raise NotImplementedError(
+            f"Entangler build via Kasli not (yet) supported for ARTIQ {_artiq_version_str}"
+        )
 
-    # merge Entangler Schema into default ARTIQ schema
-    mergedeep.merge(
-        artiq_jsondesc.schema,
-        json.loads(
-            pathlib.Path(__file__).with_name("entangler_eem.schema.json").read_text()
-        ),
-        strategy=mergedeep.Strategy.TYPESAFE_ADDITIVE,
-    )
 
-    eem_7series.peripheral_processors["entangler"] = peripheral_entangler
-    default_iostandard = eem_mod.default_iostandard
-elif _ARTIQ_MAJOR_VERSION == 5:
-    try:
-        kasligen.peripheral_processors["entangler"] = peripheral_entangler
-    except AttributeError as exc:
-        raise ImportError(
-            "Likely outdated ARTIQ version. Check your ARTIQ version includes PR #1426"
-        ) from exc
-
-    default_iostandard = "LVDS_25"
-
+if _ARTIQ_MAJOR_VERSION in {6, 7}:
+    _default_iostandard = eem_mod.default_iostandard
+else:
+    _default_iostandard = "LVDS_25"  # ARTIQ 5
 
 # pylint: disable=protected-access
 class EntanglerEEM(eem_mod._EEM):
@@ -125,7 +133,7 @@ class EntanglerEEM(eem_mod._EEM):
         eem_interface: int = None,
         uses_reference: bool = False,
         interface_on_lower: bool = True,
-        iostandard: typing.Union[str, IOStandard] = default_iostandard,
+        iostandard: typing.Union[str, IOStandard] = _default_iostandard,
     ) -> typing.Sequence["Pad_Assignments"]:
         """Define the IO pins used by the Entangler device.
 
@@ -426,4 +434,5 @@ class EntanglerEEM(eem_mod._EEM):
 if __name__ == "__main__":
     # run the basic kasli_generic with logging & the entangler processor.
     logging.basicConfig(level=logging.INFO)
+    _add_eem_to_artiq_build(_ARTIQ_MAJOR_VERSION)
     kasligen.main()
