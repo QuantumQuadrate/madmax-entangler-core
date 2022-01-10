@@ -39,7 +39,7 @@ To launch a shell where you can build Entangler Gateware, you need a Xilinx lice
 Entangler gateware with
 
 ```bash
-nix-shell -I artiqSrc=/PATH/TO/ARTIQ/REPO/ /ENTANGLER/PATH/nix/entangler-shell-dev.nix --run "python -m entangler.kasli_generic /PATH/TO/KASLI_DESCRIPTOR.json"
+nix-shell /ENTANGLER/PATH/nix/entangler-shell-dev.nix --run "python -m entangler.kasli_generic /PATH/TO/KASLI_DESCRIPTOR.json"
 ```
 
 This can then be flashed with:

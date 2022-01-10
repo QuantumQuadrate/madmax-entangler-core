@@ -5,21 +5,20 @@
 # Use this shell to build the Gateware for the Entangler.
 # Adds the Entangler package to ARTIQ's default "shell-dev.nix" environment
 
-# Can be called like ``$ nix-shell -I artiqSrc=/PATH/TO/ARTIQ/GIT/REPO ./entangler-shell-dev.nix``
-# TODO: remove dependency on <artiqSrc>. Can't figure out how to easily remove, other than maybe patch.
-
 let
   entangler = pkgs.callPackage ./default.nix { inherit artiqpkgs; };
-  mlabs-nix-scripts = builtins.fetchGit {
-    url="https://git.m-labs.hk/M-Labs/nix-scripts.git";
-    ref="master"; # impure, but fine for our purposes
+  mlabs-nix-scripts = builtins.fetchTarball {
+    # See PR: https://git.m-labs.hk/M-Labs/nix-scripts/pulls/76
+    # TODO: Revert to mainline mlabs-nix-scripts once the above PR is merged
+    name = "mlabs-nix-scripts-overrideable-shell-dev.tar.gz";
+    url = "https://git.m-labs.hk/drewrisinger/nix-scripts/archive/47960f539b85b05797c9596e56eda59ea148a3f7.tar.gz";
+    sha256 = "0iic5fl3162zl624ks3493jv8hfdwyx6jb8llzw4ddvz1h4h2fr1";
   };
-  dev-artiq-shell = import "${mlabs-nix-scripts}/artiq-fast/shell-dev.nix" {};  # Depends on <artiqSrc> to import, can't remove artiqSrc dependency easily. moving on.
   # Force shell to use Release (i.e. MLabs Nix Channel) ARTIQ build, instead of passing all source/arguments ourselves.
-  dev-shell-with-release-artiq = dev-artiq-shell.overrideAttrs (oldAttrs: rec { artiqpkgs = artiqpkgs ; });
+  dev-artiq-shell = import "${mlabs-nix-scripts}/artiq-fast/shell-dev.nix" { inherit artiqpkgs; };
 in
   pkgs.mkShell{
     # Add Entangler to the development shell
-    buildInputs = [ entangler ] ++ dev-shell-with-release-artiq.buildInputs;
-    inherit (dev-shell-with-release-artiq) TARGET_AR;  # Set LLVM target
+    buildInputs = [ entangler ] ++ dev-artiq-shell.buildInputs;
+    inherit (dev-artiq-shell) TARGET_AR;  # Set LLVM target
   }
