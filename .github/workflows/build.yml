@@ -40,3 +40,7 @@ jobs:
     - name: Test Kasli JSON description support
       # doesn't build the example (that would require Vivado), but checks that the JSON description is recognized & won't be rejected by ARTIQ b/c it doesn't match the scheme
       run: nix-shell ./nix/default.nix --run "python ./entangler/kasli_generic.py ./example/entangler_gateware_example.json --no-compile-gateware --no-compile-software"
+    - name: Test Nix Gateware Shell creation (ARTIQ Stable)
+      if: ${{ ! contains(matrix.nixPath, 'beta') }}
+      run: nix-shell ./nix/entangler-shell-gateware.nix
+    # TODO: add support for testing against ARTIQ development version (ARTIQ 7+, using flakes)
