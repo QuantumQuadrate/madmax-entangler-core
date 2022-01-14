@@ -1,130 +1,88 @@
-"""Test the :class:`entangler.phy.Entangler` functionality."""
+"""Test the :class:`Entangler` functionality."""
+import logging
 import os
 import sys
+
+import pytest
+from migen import run_simulation  # noqa: E402
+
+from entangler.phy_registers import ADDRESS_READ, ADDRESS_WRITE
+from entangler.config import settings
 
 # add gateware simulation tools "module" (at ./helpers/*)
 sys.path.append(os.path.join(os.path.dirname(__file__), "helpers"))
 
 
-from migen import Module  # noqa: E402
-from migen import run_simulation  # noqa: E402
-from migen import Signal  # noqa: E402
-
-from gateware_utils import MockPhy  # noqa: E402 ./helpers/gateware_utils
-from gateware_utils import rtio_output_event  # noqa: E402
-from entangler.phy import Entangler  # noqa: E402
+# ./helpers/gateware_utils
+from gateware_utils import advance_clock  # noqa: E402 pylint: disable=import-error
+from phytester import PhyTestHarness  # noqa: E402 pylint: disable=import-error
 
 
-class PhyHarness(Module):
-    """PHY Test Harness for :class:`entangler.phy.Entangler`."""
-
-    def __init__(self):
-        """Connect the mocked PHY devices to this device."""
-        self.counter = Signal(32)
-
-        self.submodules.phy_apd0 = MockPhy(self.counter)
-        self.submodules.phy_apd1 = MockPhy(self.counter)
-        self.submodules.phy_apd2 = MockPhy(self.counter)
-        self.submodules.phy_apd3 = MockPhy(self.counter)
-        self.submodules.phy_ref = MockPhy(self.counter)
-        input_phys = [
-            self.phy_apd0,
-            self.phy_apd1,
-            self.phy_apd2,
-            self.phy_apd3,
-            self.phy_ref,
-        ]
-
-        core_link_pads = None
-        output_pads = None
-        passthrough_sigs = None
-        self.submodules.core = Entangler(
-            core_link_pads, output_pads, passthrough_sigs, input_phys, simulate=True
-        )
-
-        self.comb += self.counter.eq(self.core.core.msm.m)
+_LOGGER = logging.getLogger(__name__)
 
 
-ADDR_CONFIG = 0
-ADDR_RUN = 1
-ADDR_NCYCLES = 2
-ADDR_HERALDS = 3
-ADDR_TIMING = 0b1000
-
-
-def test_basic(dut):
+def basic_phy_check(dut: PhyTestHarness):
     """Test the entire :mod:`entangler` gateware basic functionality works."""
-    # Helper functions for state machine testing
-    def out(addr, data):
-        yield from rtio_output_event(dut.core.rtlink, addr, data)
-
-    def write_heralds(heralds=None):
-        data = 0
-        for i, h in enumerate(heralds):
-            assert i < 4
-            data |= (1 << i) << (4 * 4)
-            data |= h << (4 * i)
-        yield from out(ADDR_HERALDS, data)
-
+    _LOGGER.debug("Starting basic_phy_check")
     yield dut.phy_ref.t_event.eq(1000)
-    yield dut.phy_apd0.t_event.eq(1000)
-    yield dut.phy_apd1.t_event.eq(1000)
+    yield dut.input_phys[0].t_event.eq(1000)
+    yield dut.input_phys[1].t_event.eq(1000)
 
-    for _ in range(5):
-        yield
-    yield from out(ADDR_CONFIG, 0b110)  # disable, standalone
-    yield from write_heralds([0b0101, 0b1010, 0b1100, 0b0101])
-    for i in range(4):
-        yield from out(ADDR_TIMING + i, (2 * i + 2) * (1 << 16) | 2 * i + 1)
-    # for i in [0,2]:
-    #     yield from out(ADDR_TIMING+4+i, (30<<16) | 18)
-    # for i in [1,3]:
-    #     yield from out(ADDR_TIMING+4+i, (1000<<16) | 1000)
-    yield from out(ADDR_NCYCLES, 30)
-    yield from out(ADDR_CONFIG, 0b111)  # Enable standalone
-    yield from out(ADDR_RUN, int(2e3 / 8))
+    yield from advance_clock(5)
+    yield from dut.write(ADDRESS_WRITE.CONFIG, 0b110)  # standalone, master, disable
+    yield from dut.write_heralds([0b0101, 0b1010, 0b1100, 0b0101])
+    for i in range(settings.NUM_OUTPUT_CHANNELS):
+        # set outputs to be on for 1 coarse clock cycle
+        yield from dut.write(
+            ADDRESS_WRITE.TIMING + i, (2 * i + 2) * (1 << 16) | 2 * i + 1
+        )
+    # for i in [0, 2]:
+    #     yield from dut.write(ADDRESS_WRITE.TIMING + 4 + i, (30 << 16) | 18)
+    # for i in [1, 3]:
+    #     yield from dut.write(ADDRESS_WRITE.TIMING + 4 + i, (1000 << 16)
+    #       | 1000)
+    yield from dut.write(ADDRESS_WRITE.TCYCLE, 30)
+    yield from dut.write(ADDRESS_WRITE.CONFIG, 0b111)  # Enable standalone
+    yield from dut.write(ADDRESS_WRITE.RUN, int(2e3 / 8))
 
-    for i in range(1000):
-        # if i==200:
-        #     yield dut.phy_ref.t_event.eq( 8*10+3 )
-        #     yield dut.phy_apd0.t_event.eq( 8*10+3 + 18)
-        #     yield dut.phy_apd1.t_event.eq( 8*10+3 + 30)
-        yield
+    yield from advance_clock(1000)
+    # for i in range(1000):
+    #     # if i==200:
+    #     #     yield dut.phy_ref.t_event.eq( 8*10+3 )
+    #     #     yield dut.input_phys[0].t_event.eq( 8*10+3 + 18)
+    #     #     yield dut.input_phys[1].t_event.eq( 8*10+3 + 30)
+    #     yield
 
-    yield from out(0b10000, 0)  # Read status
+    yield from dut.write(ADDRESS_READ.STATUS, 0)  # Read status
     yield
-    yield from out(0b10000 + 1, 0)  # Read n_cycles
+    yield from dut.write(ADDRESS_READ.NCYCLES, 0)  # Read n_cycles
     yield
-    yield from out(0b10000 + 2, 0)  # Read time elapsed
+    yield from dut.write(ADDRESS_READ.TIME_REMAINING, 0)  # Read time elapsed
     yield
     for i in range(5):
-        yield from out(0b11000 + i, 0)  # Read input timestamps
+        yield from dut.write(ADDRESS_READ.TIMESTAMP + i, 0)  # Read input timestamps
         yield
-    for _ in range(5):
-        yield
+    yield from advance_clock(5)
 
 
-def test_timeout(dut):
+def check_phy_timeout(dut: PhyTestHarness):
     """Test that :mod:`entangler` timeout works.
 
-    Sweeps the timeout is swept to occur at all possible points in the
-    state machine operation.
+    Sweeps the timeout to occur at all possible points in the state machine operation.
     """
+    _LOGGER.debug("Starting basic_phy_check")
     # Declare internal helper functions.
-    def out(addr, data):
-        yield from rtio_output_event(dut.core.rtlink, addr, data)
-
     def do_timeout(timeout, n_cycles=10):
         yield
-        yield from out(ADDR_CONFIG, 0b110)  # disable, standalone
-        yield from out(ADDR_NCYCLES, n_cycles)
-        yield from out(ADDR_CONFIG, 0b111)  # Enable standalone
-        yield from out(ADDR_RUN, timeout)
+        yield from dut.write(ADDRESS_WRITE.CONFIG, 0b110)  # disable, standalone
+        yield from dut.write(ADDRESS_WRITE.TCYCLE, n_cycles)
+        yield from dut.write(ADDRESS_WRITE.CONFIG, 0b111)  # Enable standalone
+        yield from dut.write(ADDRESS_WRITE.RUN, timeout)
 
         timedout = False
         for i in range(timeout + n_cycles + 50):
             if (yield dut.core.rtlink.i.stb):
-                data = (yield dut.core.rtlink.i.data)
+                data = yield dut.core.rtlink.i.data
                 if data == 0x3FFF:
                     # This should be the first and only timeout
                     assert not timedout
@@ -138,13 +96,43 @@ def test_timeout(dut):
         yield from do_timeout(i, n_cycles=10)
 
 
-if __name__ == "__main__":
-    dut = PhyHarness()
+@pytest.fixture
+def phy_dut() -> PhyTestHarness:
+    """Create an EntanglerPHY test harness for sim."""
+    return PhyTestHarness()
+
+
+ARTIQ_CLOCKS = {"sys": 8, "rio": 8, "rio_phy": 8}
+
+
+@pytest.mark.parametrize(
+    "test_function",
+    [basic_phy_check, check_phy_timeout],
+)
+def test_phy_func(request, phy_dut: PhyTestHarness, test_function):
+    """Run test functions on an Entangler PHY."""
     run_simulation(
-        dut, test_basic(dut), vcd_name="phy.vcd", clocks={"sys": 8, "rio": 8}
+        phy_dut,
+        test_function(phy_dut),
+        vcd_name=(request.node.name + ".vcd"),
+        clocks=ARTIQ_CLOCKS,
     )
 
-    dut = PhyHarness()
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
+    dut = PhyTestHarness()
     run_simulation(
-        dut, test_timeout(dut), vcd_name="phy_timeout.vcd", clocks={"sys": 8, "rio": 8}
+        dut,
+        basic_phy_check(dut),
+        vcd_name="phy.vcd",
+        clocks=ARTIQ_CLOCKS,
+    )
+
+    dut = PhyTestHarness()
+    run_simulation(
+        dut,
+        check_phy_timeout(dut),
+        vcd_name="phy_timeout.vcd",
+        clocks=ARTIQ_CLOCKS,
     )

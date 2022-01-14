@@ -1,3 +1,4 @@
 artiq>=5
-migen
+dynaconf>=3
+mergedeep
 numpy

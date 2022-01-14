@@ -1,0 +1,46 @@
+name: "Test entangler build"
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+jobs:
+  tests:
+    strategy:
+      matrix:
+        nixPath:
+          # stable ARTIQ 6
+          - artiq-full=https://nixbld.m-labs.hk/job/artiq/full/artiq-full/latest/download:nixpkgs=channel:nixos-21.05
+          # beta ARTIQ 7
+          - artiq-full=https://nixbld.m-labs.hk/job/artiq/full-beta/artiq-full/latest/download:nixpkgs=channel:nixos-21.05
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2.4.0
+    - name: Install nix
+      uses: cachix/install-nix-action@v16
+      with:
+        nix_path: "${{ matrix.nixPath }}"
+        extra_nix_config: |
+          experimental-features = nix-command
+          substituters = https://cache.nixos.org https://nixbld.m-labs.hk
+          trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixbld.m-labs.hk-1:5aSRVA5b320xbNvu30tqxVPXpld73bhtOeH6uAjRyHc=
+    - name: Show nixpkgs version
+      run: nix-instantiate --eval -E '(import <nixpkgs> {}).lib.version'
+    - name: Build Nix Package
+      env:
+        # Allow building unfree packages & unsupported systems for CI purposes
+        NIXPKGS_ALLOW_UNFREE: 1
+        NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM: 1
+      run: |
+        nix-build ./nix/default.nix
+        nix-build ./nix/default.nix --arg buildGateware false
+    - name: Test Kasli JSON description support
+      # doesn't build the example (that would require Vivado), but checks that the JSON description is recognized & won't be rejected by ARTIQ b/c it doesn't match the scheme
+      run: nix-shell ./nix/default.nix --run "python ./entangler/kasli_generic.py ./example/entangler_gateware_example.json --no-compile-gateware --no-compile-software"
+    - name: Test Nix Gateware Shell creation (ARTIQ Stable)
+      if: ${{ ! contains(matrix.nixPath, 'beta') }}
+      run: nix-shell ./nix/entangler-shell-gateware.nix
+    # TODO: add support for testing against ARTIQ development version (ARTIQ 7+, using flakes)

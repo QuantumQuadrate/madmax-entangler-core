@@ -1,13 +1,14 @@
 """Test the entangler state machine logic in :class`entangler.core.MainStateMachine`."""
+import pytest
 from migen import Module
 from migen import run_simulation
 
 from entangler.core import MainStateMachine
 
 
-def msm_master_test(dut):
+def msm_master_test(dut: MainStateMachine):
     """Test the main state machine in master configuration."""
-    yield dut.m_end.eq(10)
+    yield dut.cycle_length_input.eq(10)
     yield dut.is_master.eq(1)
     yield dut.time_remaining.eq(100)
 
@@ -17,9 +18,9 @@ def msm_master_test(dut):
         yield
 
 
-def msm_slave_test(dut):
+def msm_slave_test(dut: MainStateMachine):
     """Test the state machine in slave configuration."""
-    yield dut.m_end.eq(10)
+    yield dut.cycle_length_input.eq(10)
     yield dut.is_master.eq(1)
     yield dut.cycles_remaining.eq(3)
 
@@ -48,10 +49,10 @@ class MsmPair(Module):
 
 def msm_standalone_test(dut):
     """Test the ``Entangler`` state machine logic in standalone mode."""
-    yield dut.m_end.eq(10)
+    yield dut.cycle_length_input.eq(10)
     yield dut.is_master.eq(1)
     yield dut.standalone.eq(1)
-    yield dut.time_remaining_buf.eq(80)
+    yield dut.timeout_input.eq(80)
 
     yield
     yield
@@ -75,6 +76,8 @@ def msm_standalone_test(dut):
         assert finished
         success = yield dut.success
         assert success == allow_success
+        # check no timeout if succeeded
+        assert bool((yield dut.timeout)) != allow_success
 
     yield from run()
 
@@ -85,14 +88,14 @@ def msm_standalone_test(dut):
     yield from run(False)
 
 
-def msm_pair_test(dut):
+def msm_pair_test(dut: MsmPair):
     """Test the master/slave state machines working together."""
-    yield dut.master.m_end.eq(10)
-    yield dut.slave.m_end.eq(10)
-    yield dut.master.time_remaining_buf.eq(100)
-    yield dut.slave.time_remaining_buf.eq(100)
+    yield dut.master.cycle_length_input.eq(10)
+    yield dut.slave.cycle_length_input.eq(10)
+    yield dut.master.timeout_input.eq(100)
+    yield dut.slave.timeout_input.eq(100)
 
-    def run(t_start_master=10, t_start_slave=20, t_herald=None):
+    def run(t_start_master: int, t_start_slave: int, t_herald: int = None):
         yield dut.master.herald.eq(0)
         for _ in range(5):
             yield
@@ -150,6 +153,34 @@ def msm_pair_test(dut):
 
     # Time out without success, master timing out first
     yield from run(t_start_master=10, t_start_slave=60, t_herald=None)
+
+
+@pytest.fixture
+def msm_standalone() -> MainStateMachine:
+    """Create a single StateMachine for sim."""
+    return MainStateMachine()
+
+
+@pytest.fixture
+def msm_pair() -> MsmPair:
+    """Create two paired StateMachines for sim."""
+    return MsmPair()
+
+
+def test_msm_standalone(request, msm_standalone):
+    """Test the standalone StateMachine."""
+    run_simulation(
+        msm_standalone,
+        msm_standalone_test(msm_standalone),
+        vcd_name=(request.node.name + ".vcd"),
+    )
+
+
+def test_msm_pair(request, msm_pair):
+    """Test communication between a StateMachine pair."""
+    run_simulation(
+        msm_pair, msm_pair_test(msm_pair), vcd_name=(request.node.name + ".vcd")
+    )
 
 
 if __name__ == "__main__":

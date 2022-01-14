@@ -2,16 +2,20 @@
 import os
 import sys
 
+import pytest
+from migen import If
+from migen import Module
+from migen import run_simulation
+from migen import Signal
+
+from entangler.config import settings
+from entangler.core import TriggeredInputGater  # noqa: E402
+
 # add gateware simulation tools "module" (at ./helpers/*)
 sys.path.append(os.path.join(os.path.dirname(__file__), "helpers"))
 
 
-from migen import If  # noqa: E402
-from migen import Module  # noqa: E402
-from migen import Signal  # noqa: E402
-from migen import run_simulation  # noqa: E402
-
-from entangler.core import TriggeredInputGater  # noqa: E402
+#  ./helpers/gateware_utils
 from gateware_utils import MockPhy  # noqa: E402 pylint: disable=import-error
 
 
@@ -20,7 +24,7 @@ class TriggeredGaterHarness(Module):
 
     def __init__(self):
         """Create a test harness for the :class:`TriggeredInputGater`."""
-        self.m = Signal(14)
+        self.m = Signal(settings.FULL_COUNTER_WIDTH)
         self.rst = Signal()
         self.sync += [self.m.eq(self.m + 1), If(self.rst, self.m.eq(0))]
 
@@ -32,7 +36,7 @@ class TriggeredGaterHarness(Module):
         self.comb += core.clear.eq(self.rst)
 
 
-def gater_test(dut, gate_start=None, gate_stop=None, t_ref=None, t_sig=None):
+def gater_test(dut, gate_start: int, gate_stop: int, t_ref: int, t_sig: int):
     """Test a ``TriggeredInputGater`` correctly registers inputs."""
     yield dut.core.gate_start.eq(gate_start)
     yield dut.core.gate_stop.eq(gate_stop)
@@ -42,21 +46,60 @@ def gater_test(dut, gate_start=None, gate_stop=None, t_ref=None, t_sig=None):
     yield
     yield dut.rst.eq(1)
     yield
+    assert (yield dut.core.sig_ts) == 0
     yield dut.rst.eq(0)
 
-    for _ in range(20):
+    end_time = max((t_ref + gate_stop), (t_ref + t_sig))
+
+    has_triggered_ever = False
+    while (yield dut.m) * 8 < end_time + 5:
         yield
 
-    triggered = (yield dut.core.triggered)
+        triggered = (yield dut.core.triggered) == 1
+        # TODO: why dut.m +1??
+        current_time = (yield dut.m) * 8
+        # time_since_ref = current_time - t_ref
 
-    ref_ts = (yield dut.core.ref_ts)
-    sig_ts = (yield dut.core.sig_ts)
+        ref_ts = yield dut.core.ref_ts
+        sig_ts = yield dut.core.sig_ts
+        dt = t_sig - t_ref
+        signal_in_window = gate_start <= dt <= gate_stop
+        signal_occurred = current_time > t_sig
+
+        # should trigger if the signal is in the window & the signal time has passed,
+        # or if it ever triggered in the past
+        should_trigger = (signal_in_window and signal_occurred) or has_triggered_ever
+        assert triggered == should_trigger
+        if triggered:
+            has_triggered_ever = True
+            assert sig_ts == t_sig
 
     print(triggered, ref_ts, sig_ts)
 
-    dt = t_sig - t_ref
-    expected_triggered = (dt >= gate_start) & (dt <= gate_stop)
-    assert triggered == expected_triggered
+
+@pytest.fixture
+def gater_dut() -> TriggeredGaterHarness:
+    """Create a TriggeredInputGater for sim."""
+    return TriggeredGaterHarness()
+
+
+# @pytest.mark.parametrize("gate_start,gate_stop,t_ref,t_sig", (20, 30, 20, 41))
+@pytest.mark.parametrize("gate_start,gate_stop,t_ref", [(8, 25, 20), (20, 30, 20)])
+@pytest.mark.parametrize("t_sig", range(20, 20 + 25 + 10))
+def test_triggered_gater(
+    request,
+    gater_dut: TriggeredGaterHarness,
+    gate_start: int,
+    gate_stop: int,
+    t_ref: int,
+    t_sig: int,
+):
+    """Test the TriggeredInputGater by scanning signal through its gating window."""
+    run_simulation(
+        gater_dut,
+        gater_test(gater_dut, gate_start, gate_stop, t_ref, t_sig),
+        vcd_name=(request.node.name + ".vcd"),
+    )
 
 
 if __name__ == "__main__":
@@ -67,22 +110,6 @@ if __name__ == "__main__":
     gate_stop = 25
     t_ref = 20
 
-    dut = TriggeredGaterHarness()
-    run_simulation(
-        dut, gater_test(dut, gate_start, gate_stop, t_ref, t_ref + gate_start - 1)
-    )
-
-    dut = TriggeredGaterHarness()
-    run_simulation(
-        dut, gater_test(dut, gate_start, gate_stop, t_ref, t_ref + gate_start)
-    )
-
-    dut = TriggeredGaterHarness()
-    run_simulation(
-        dut, gater_test(dut, gate_start, gate_stop, t_ref, t_ref + gate_stop)
-    )
-
-    dut = TriggeredGaterHarness()
-    run_simulation(
-        dut, gater_test(dut, gate_start, gate_stop, t_ref, t_ref + gate_stop + 1)
-    )
+    for t_sig in range(t_ref, t_ref + gate_stop + 25):
+        dut = TriggeredGaterHarness()
+        run_simulation(dut, gater_test(dut, gate_start, gate_stop, t_ref, t_sig))

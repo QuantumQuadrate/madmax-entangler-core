@@ -1,0 +1,438 @@
+"""Add support for the Entangler to the generic Kasli builder.
+
+Effectively adds :mod:`entangler` to kasli_generic builder
+(artiq/gateware/kasli_generic.py) and the EEM module
+(artiq/gateware/eem.py).
+"""
+import json
+import logging
+import pathlib
+import typing
+
+import artiq.gateware.eem as eem_mod
+import artiq.gateware.rtio as rtio
+import artiq.gateware.targets.kasli_generic as kasligen
+import mergedeep
+from artiq import __version__ as _artiq_version_str
+from artiq.gateware.rtio.phy import ttl_serdes_7series
+from artiq.gateware.rtio.phy import ttl_simple
+from migen import Signal
+from migen.build.generic_platform import ConstraintError
+from migen.build.generic_platform import IOStandard
+from migen.build.generic_platform import Pins
+from migen.build.generic_platform import Subsignal
+
+import entangler.phy
+from entangler.config import settings as entangler_settings
+
+_LOGGER = logging.getLogger(__name__)
+# packaging.version.parse() preferred, but the ARTIQ version is not PEP440 compliant
+_ARTIQ_MAJOR_VERSION = int(_artiq_version_str.split(".")[0])
+
+
+def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
+    """Add an Ion-Photon entangling gateware device to an ARTIQ SoC.
+
+    Expected format:
+        {
+            "type": "entangler",
+            "ports": [list of ints],
+            {OPTIONAL} "uses_reference": bool,
+            {OPTIONAL} "running_output": bool
+            {OPTIONAL} "link_eem": int,
+            {OPTIONAL} "interface_on_lower": bool,
+        }
+
+    More details in :class:`EntanglerEEM`.
+    """
+    using_ref = peripheral.get("uses_reference", False)
+    running_signal = peripheral.get("running_output", False)
+    num_inputs = entangler_settings.NUM_ENTANGLER_INPUT_SIGNALS
+    num_outputs = entangler_settings.NUM_OUTPUT_CHANNELS
+    if using_ref:
+        # add reference
+        num_inputs += 1
+    if running_signal:
+        num_outputs += 1
+
+    num_eem = len(peripheral["ports"]) + (
+        1 if peripheral.get("link_eem") is not None else 0
+    )
+    if peripheral.get("link_eem") is not None:
+        # Using inter-Kasli/Entangler communication
+        num_link_pins = 5 if using_ref else 4
+    else:
+        num_link_pins = 0
+
+    if (num_eem * 8) < num_inputs + num_outputs + num_link_pins:
+        _LOGGER.warning(
+            "Maybe insufficient number of I/O EEM boards. "
+            "Must use Interface to get sufficient number, or another DIO EEM. "
+            "Expecting %i total I/O",
+            num_inputs + num_outputs + num_link_pins,
+        )
+    _LOGGER.debug("Adding entangler to Kasli. Params: %s", peripheral)
+    EntanglerEEM.add_std(
+        module,
+        eem_dio=peripheral["ports"],
+        eem_interface=peripheral.get("link_eem"),
+        uses_reference=using_ref,
+        running_output=running_signal,
+        interface_on_lower=peripheral.get("interface_on_lower", True),
+    )
+
+
+def _add_eem_to_artiq_build(artiq_version: int) -> None:
+    """Patch the EEM into the ARTIQ Kasli build process"""
+    if artiq_version in {6, 7}:
+        import artiq.coredevice.jsondesc as artiq_jsondesc
+        import artiq.gateware.eem_7series as eem_7series
+
+        # add entangler processor to the Kasli EEM JSON processors
+        eem_7series.peripheral_processors["entangler"] = peripheral_entangler
+
+        # merge Entangler Schema into default ARTIQ schema
+        mergedeep.merge(
+            artiq_jsondesc.schema,
+            json.loads(
+                pathlib.Path(__file__)
+                .with_name("entangler_eem.schema.json")
+                .read_text()
+            ),
+            strategy=mergedeep.Strategy.TYPESAFE_ADDITIVE,
+        )
+    elif artiq_version == 5:
+        try:
+            kasligen.peripheral_processors["entangler"] = peripheral_entangler
+        except AttributeError as exc:
+            raise ImportError(
+                "Likely outdated ARTIQ version. Check your ARTIQ version includes PR #1426"
+            ) from exc
+    else:
+        raise NotImplementedError(
+            f"Entangler build via Kasli not (yet) supported for ARTIQ {_artiq_version_str}"
+        )
+
+
+if _ARTIQ_MAJOR_VERSION in {6, 7}:
+    _default_iostandard = eem_mod.default_iostandard
+else:
+    _default_iostandard = "LVDS_25"  # ARTIQ 5
+
+# pylint: disable=protected-access
+class EntanglerEEM(eem_mod._EEM):
+    """Define the pins and gateware/logic used by the Entangler.
+
+    If you are using this extension, you should NOT use the corresponding EEM(s)
+    elsewhere (e.g. as DIO).
+    """
+
+    @staticmethod
+    def io(
+        eem_dio: typing.Sequence[int],
+        eem_interface: int = None,
+        uses_reference: bool = False,
+        interface_on_lower: bool = True,
+        iostandard: typing.Union[str, IOStandard] = _default_iostandard,
+    ) -> typing.Sequence["Pad_Assignments"]:
+        """Define the IO pins used by the Entangler device.
+
+        Args:
+            eem_interface (Optional[int]): An optional EEM for interfacing between
+                distributed Entanglers (on separate Kasli).
+                Set to None for no interface.
+            eem_dio (Sequence[int]): EEM numbers for the DIO cards to be used by
+                the Entangler. Should be <= (num_inputs + num_outputs, in
+                ``settings.toml``). Must have at least one.
+            uses_reference (bool): If you are using a reference signal/trigger
+                to the Entangler. Defaults to False.
+            interface_on_lower (bool): If not using a reference, you need less
+                interface pins, which this supports by assigning half of one
+                I/O bank (=4 pins) to Interface, and other half to DIO.
+                This selects whether the lower (0-3) or upper (4-7) pins should
+                be Interface. Others will be DIO.
+            iostandard (str): Defines the voltage/communication standard for the pins.
+                Defaults to differential ("LVDS_25").
+
+        Returns:
+            Sequence["Pad_Assignments"]: Pins meant for defining an EEM platform
+            extension.
+            Each consists of a connector/bus name, pin name, Subsignals, and other
+            parameters like IO Standards.
+            Similar to Xilinx/Altera pin config files (``*.ucf``).
+
+        """
+        ios = []
+        if not isinstance(eem_dio, list):
+            eem_dio = [eem_dio]
+        for eem in eem_dio:
+            ios.extend(eem_mod.DIO.io(eem, iostandard))
+        if eem_interface is not None:
+            if not uses_reference:
+                num_interface_pads = 4
+                if interface_on_lower:
+                    pad_range = list(range(0, 4))
+                    dio_range = list(range(4, 8))
+                else:
+                    pad_range = list(range(4, 8))
+                    dio_range = list(range(0, 4))
+            else:
+                # doesn't give lower/upper option for reference, just start at 0
+                num_interface_pads = 5
+                pad_range = list(range(num_interface_pads))
+                dio_range = list(range(num_interface_pads, 8))
+
+            _LOGGER.debug(
+                "Creating inter-Kasli Entangler state machine interface on "
+                "EEM %i, using %i pads (%s)",
+                eem_interface,
+                num_interface_pads,
+                pad_range,
+            )
+            # pylint: disable=protected-access
+            if_io = [
+                (
+                    "if{}".format(eem_interface),
+                    i,
+                    Subsignal("p", Pins(eem_mod._eem_pin(eem_interface, i, "p"))),
+                    Subsignal("n", Pins(eem_mod._eem_pin(eem_interface, i, "n"))),
+                    IOStandard(iostandard),
+                )
+                for i in pad_range
+            ]
+            if len(dio_range) != 0:
+                # populate remainder with DIO
+                if_io.extend(
+                    [
+                        (
+                            "dio{}".format(eem_interface),
+                            i,
+                            Subsignal(
+                                "p",
+                                Pins(eem_mod._eem_pin(eem_interface, real_pin, "p")),
+                            ),
+                            Subsignal(
+                                "n",
+                                Pins(eem_mod._eem_pin(eem_interface, real_pin, "n")),
+                            ),
+                            IOStandard(iostandard),
+                        )
+                        for i, real_pin in enumerate(dio_range)
+                    ]
+                )
+            ios.extend(if_io)
+        else:
+            _LOGGER.debug("NOT using inter-Kasli Entangler interface")
+        return ios
+
+    @classmethod
+    def add_std(
+        cls,
+        target: "MiniSoC",  # noqa: F821
+        eem_dio: typing.Sequence[int],
+        eem_interface: typing.Optional[int] = None,
+        uses_reference: bool = False,
+        running_output: bool = False,
+        interface_on_lower: bool = True,
+    ):
+        """Add an Entangler PHY to a Kasli gateware module.
+
+        Args:
+            target (Module): The gateware module the Entangler will be added to.
+            eem_dio (typing.Sequence[int]): A list of EEM ports that are connected
+                to DIO boards, which are used for the inputs & outputs from the
+                Entangler.
+            eem_interface (typing.Optional[int]): The EEM number where the
+                inter-Entangler interface pins will be located.
+                Should be connected to a DIO board.
+                If set to None, assumes the Entangler is standalone (no remote
+                Entangler on a different Kasli) and does not instantiate interface.
+            uses_reference (bool, optional): If the Entangler PHY is designed
+                to be used in conjunction with a reference trigger/signal.
+                For example, if the entanglement can only be generated relative
+                to a pulsed laser (as in Oxford). Defaults to False.
+            running_output (bool, optional): If the Entangler PHY should output
+                an "Is Running?" status signal on the last output channel.
+                Defaults to False.
+            interface_on_lower (bool, optional): See :meth:`io` for details.
+                Basically, if no reference is used, should the 4 pins for
+                communication be on the lower or upper half of the DIO bank.
+                Defaults to True.
+
+        Note:
+            Pin assignment ordering: Pins are assigned in the following order:
+            Outputs,
+            (optional out: entangler_is_running?, if set in JSON & settings.toml),
+            Entangler Inputs (pattern-matching inputs then optional reference input),
+            Generic Inputs (other InOuts, not included in pattern-matching).
+            We first try to fill up the eem_dio pads, then the eem_interface pads.
+            This means that the Input pins could be assigned to the same EEM
+            as the inter-Kasli Entangler communication.
+            If that's not desired, feel free to rewrite it yourself.
+
+            Built liberally off Oxford's draft EEM code, though greatly extended.
+        """
+        cls.add_extension(
+            target,
+            eem_dio,
+            eem_interface=eem_interface,
+            uses_reference=uses_reference,
+            interface_on_lower=interface_on_lower,
+        )
+
+        if _ARTIQ_MAJOR_VERSION >= 6:
+            io_class = {
+                "input": ttl_serdes_7series.InOut_8X,
+                "output": ttl_simple.Output,
+            }
+        else:
+            io_class = {
+                "input": ttl_serdes_7series.Input_8X,
+                "output": ttl_simple.Output,
+            }
+        num_outputs = entangler_settings.NUM_OUTPUT_CHANNELS
+        num_entangler_inputs = entangler_settings.NUM_ENTANGLER_INPUT_SIGNALS
+        num_generic_inputs = entangler_settings.NUM_GENERIC_INPUT_SIGNALS
+        num_total_inputs = num_entangler_inputs + num_generic_inputs
+        if uses_reference:
+            num_entangler_inputs += 1
+        num_running_outputs = 1 if running_output else 0
+        num_if_pins = 5 if uses_reference else 4
+
+        # Wanted to do this with itertools, but didn't know how. So this is quick
+        # Chains eem_dio pins, then eem_interface's DIO pins (if exist).
+        # Forces outputs,inputs to go to DIO EEM (ports in JSON) first, then interface
+        all_dio_pins = []
+        for eem in eem_dio:
+            all_dio_pins.extend(
+                (target.platform.request("dio{}".format(eem), i) for i in range(8))
+            )
+        if eem_interface is not None:
+            try:
+                for i in range(8):
+                    all_dio_pins.append(
+                        target.platform.request("dio{}".format(eem_interface), i)
+                    )
+            except ConstraintError:
+                _LOGGER.debug(
+                    "Added %i DIO pins from EEM_interface %i (expected %i)",
+                    i,
+                    eem_interface,
+                    8 - num_if_pins,
+                )
+        dio_pins_iter = iter(all_dio_pins)
+        _LOGGER.debug(
+            "Total of %i DIO pins are available for Input/Output", len(all_dio_pins)
+        )
+        if num_total_inputs + num_outputs + num_running_outputs > len(all_dio_pins):
+            _LOGGER.error(
+                "Trying to allocate more I/O pins (%i) than provided (%i)",
+                num_total_inputs + num_outputs + num_running_outputs,
+                len(all_dio_pins),
+            )
+        else:
+            _LOGGER.debug(
+                "Num Outputs: %d, Num Inputs: %d (%d entangler), # DIO Pins: %d",
+                num_outputs,
+                num_total_inputs,
+                num_entangler_inputs,
+                len(all_dio_pins),
+            )
+
+        # *** Create PHYs for outputs then inputs (then reference, opt) ***
+        output_pads = []
+        output_sigs = [Signal() for _ in range(num_outputs)]
+        # Assign Entangler outputs to pads, create PHYs
+        for i in range(num_outputs):
+            pads = next(dio_pins_iter)
+            output_pads.append(pads)
+            phy = io_class["output"](output_sigs[i])
+            target.submodules += phy
+            target.rtio_channels.append(rtio.Channel.from_phy(phy))
+        _LOGGER.info(
+            "RTIO Channels %i -> %i configured as Outputs",
+            len(target.rtio_channels) - num_outputs,
+            len(target.rtio_channels) - 1,
+        )
+        if running_output:
+            # processing will be taken care of in EntanglerCore
+            pads = next(dio_pins_iter)
+            output_pads.append(pads)
+            _LOGGER.info(
+                "Assigned running output to %s-%d",
+                pads.name,
+                (len(output_pads) - 1) % 8,
+            )
+
+        # Create specified # of inputs, add them to list for Entangler creation.
+        input_phys = []
+        for i in range(num_total_inputs):
+            pads = next(dio_pins_iter)
+            if int(pads.name.lstrip("dio")) == eem_interface:
+                _LOGGER.info("Assigning Input[%i] to Interface Board", i)
+            phy = io_class["input"](pads.p, pads.n)
+            target.submodules += phy
+            # only add num_entangler_inputs -> input_phys -> Entanglercore
+            if i < num_entangler_inputs:
+                input_phys.append(phy.rtlink.i)
+            target.rtio_channels.append(rtio.Channel.from_phy(phy))
+        _LOGGER.info(
+            "RTIO Channels %i -> %i configured as Inputs (first %i entangle-able)",
+            len(target.rtio_channels) - num_total_inputs,
+            len(target.rtio_channels) - 1,
+            num_entangler_inputs,
+        )
+
+        # add reference PHY
+        if uses_reference:
+            pads = next(dio_pins_iter)
+            phy = io_class["input"](pads.p, pads.n)
+            target.submodules += phy
+            reference_phy = phy
+            target.rtio_channels.append(rtio.Channel.from_phy(phy))
+            _LOGGER.info(
+                "Adding reference PHY as input on RTIO channel %i (%s)",
+                len(target.rtio_channels) - 1,
+                pads,
+            )
+        else:
+            reference_phy = None
+
+        if eem_interface is not None:
+            if_pads = [
+                target.platform.request("if{}".format(eem_interface), i)
+                for i in range(num_if_pins)
+            ]
+        else:
+            if_pads = None
+
+        # *** Add PHYs to Entangler gateware ***
+        phy = entangler.phy.Entangler(
+            core_link_pads=if_pads,
+            output_pads=output_pads,
+            passthrough_sigs=output_sigs,
+            input_phys=input_phys,
+            reference_phy=reference_phy,
+            simulate=False,
+        )
+        target.submodules += phy
+        target.rtio_channels.append(rtio.Channel.from_phy(phy))
+        _LOGGER.info("Added Entangler PHY on channel %i", len(target.rtio_channels) - 1)
+
+        # allocate the leftover pins to DIO output. Could maybe change to InOut?
+        for pad in dio_pins_iter:
+            phy = io_class["output"](pad.p, pad.n)
+            target.submodules += phy
+            target.rtio_channels.append(rtio.Channel.from_phy(phy))
+            _LOGGER.debug(
+                "Added output %s to Entangler DIO (either interface or port "
+                "if In + Out < len(ports) * 8)",
+                pad.name,
+            )
+
+
+if __name__ == "__main__":
+    # run the basic kasli_generic with logging & the entangler processor.
+    logging.basicConfig(level=logging.INFO)
+    _add_eem_to_artiq_build(_ARTIQ_MAJOR_VERSION)
+    kasligen.main()

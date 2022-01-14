@@ -1,4 +1,8 @@
 """Gateware-side ARTIQ RTIO interface to the entangler core."""
+import logging
+import math
+import typing
+
 from artiq.gateware.rtio import rtlink
 from migen import Case
 from migen import Cat
@@ -9,6 +13,10 @@ from migen import Mux
 from migen import Signal
 
 from entangler.core import EntanglerCore
+from entangler.config import settings
+from entangler.phy_registers import ADDRESS_WRITE, max_value_to_bit_width
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class Entangler(Module):
@@ -19,22 +27,72 @@ class Entangler(Module):
     """
 
     def __init__(
-        self, core_link_pads, output_pads, passthrough_sigs, input_phys, simulate=False
+        self,
+        core_link_pads,
+        output_pads,
+        passthrough_sigs: typing.Sequence[Signal],
+        input_phys: typing.Sequence["PHY"],
+        reference_phy=None,
+        simulate: bool = False,
     ):
         """
         Define the interface between an ARTIQ RTIO bus and low-level gateware.
 
         Args:
-            core_link_pads: EEM pads for inter-Kasli link
-            output_pads: pads for 4 output signals (422sigma, 1092, 422 ps trigger, aux)
-            passthrough_sigs: signals from output phys, connected to output_pads when
-                core not running
-            input_phys: serdes phys for 5 inputs – APD0-3 and 422ps trigger in
+            core_link_pads: EEM pads for inter-Kasli link (see ``README.md`` in
+                this folder for more info)
+            output_pads: pads for 4 output signals
+                (Oxford: 422sigma, 1092, 422 ps trigger, aux)
+            passthrough_sigs (Sequence[PHY]): signals from output PHYs, connected to
+                output_pads when core not running
+            input_phys: serializer-deserializer PHYs for 4 inputs: APD0-3
+            reference_phy (PHY): a reference trigger signaling that this is a valid
+                cycle and triggering the start of the input windows.
+                In Oxford's experiment, this is a 422ps pulsed laser. This is an
+                optional parameter, this module works perfectly fine without a
+                reference trigger.
+            simulate (bool): Whether this module is being simulated. Simulation disables
+                some checks (for input sizes) that are run on instantiation.
+                This is mostly passed through to lower levels, where the behavior
+                actually does change in simulation/non-simulation modes.
         """
-        self.rtlink = rtlink.Interface(
-            rtlink.OInterface(data_width=32, address_width=5, enable_replace=False),
-            rtlink.IInterface(data_width=14, timestamped=True),
+        # width of fine & coarse timestamp/timer
+        FULL_COUNTER_WIDTH = settings.FULL_COUNTER_WIDTH
+
+        # should eval to 14, but might change.
+        PHY_DATA_INPUT_WIDTH = max(
+            (
+                FULL_COUNTER_WIDTH,
+                max_value_to_bit_width(settings.MAX_CYCLES_PER_RUN),
+                max_value_to_bit_width(settings.MAX_TRIGGER_COUNTS),
+            )
         )
+        num_herald_patterns = settings.NUM_PATTERNS_ALLOWED
+        num_inputs = settings.NUM_ENTANGLER_INPUT_SIGNALS
+        num_outputs = settings.NUM_OUTPUT_CHANNELS
+        timing_bit_width = math.ceil(math.log2(num_inputs + num_outputs))
+        _LOGGER.debug(
+            "PHY Comm (addr) format: [read?, external IO?, addr] = (MSB->LSB): "
+            "[%i,%i,%i:0]",
+            timing_bit_width + 1,
+            timing_bit_width,
+            timing_bit_width - 1,
+        )
+        _LOGGER.debug("Total output address bits: %i", timing_bit_width + 2)
+
+        self.rtlink = rtlink.Interface(
+            rtlink.OInterface(
+                data_width=32, address_width=timing_bit_width + 2, enable_replace=False
+            ),
+            rtlink.IInterface(data_width=PHY_DATA_INPUT_WIDTH, timestamped=True),
+        )
+
+        assert len(input_phys) == num_inputs
+        if not simulate:
+            assert len(core_link_pads) >= 5 if reference_phy is not None else 4
+            # +1 for running_output
+            assert len(output_pads) in (num_outputs, num_outputs + 1)
+            assert len(passthrough_sigs) == num_outputs
 
         # # #
 
@@ -44,15 +102,18 @@ class Entangler(Module):
                 output_pads,
                 passthrough_sigs,
                 input_phys,
+                reference_phy=reference_phy,
                 simulate=simulate,
             )
         )
 
-        read_en = self.rtlink.o.address[4]
+        read_en = self.rtlink.o.address[timing_bit_width + 1]  # MSB in address
         write_timings = Signal()
         self.comb += [
             self.rtlink.o.busy.eq(0),
-            write_timings.eq(self.rtlink.o.address[3:5] == 1),
+            write_timings.eq(
+                self.rtlink.o.address[timing_bit_width : timing_bit_width + 2] == 1
+            ),
         ]
 
         output_t_starts = [seq.m_start for seq in self.core.sequencers]
@@ -68,66 +129,85 @@ class Entangler(Module):
 
         # Write timeout counter and start core running
         self.comb += [
-            self.core.msm.time_remaining_buf.eq(self.rtlink.o.data),
+            self.core.msm.timeout_input.eq(self.rtlink.o.data),
             self.core.msm.run_stb.eq((self.rtlink.o.address == 1) & self.rtlink.o.stb),
         ]
 
+        herald_enable_bit_range = (
+            num_herald_patterns * num_inputs,
+            num_herald_patterns * num_inputs + num_herald_patterns,
+        )
         self.sync.rio += [
             If(
                 write_timings & self.rtlink.o.stb,
-                Case(self.rtlink.o.address[:3], cases),
+                Case(self.rtlink.o.address[0:timing_bit_width], cases),
             ),
             If(
-                (self.rtlink.o.address == 0) & self.rtlink.o.stb,
+                (self.rtlink.o.address == ADDRESS_WRITE.CONFIG)
+                & self.rtlink.o.stb,  # noqa: W503
                 # Write config
                 self.core.enable.eq(self.rtlink.o.data[0]),
+                # NOTE: is_master is set below. rtlink.o.data[1]
                 self.core.msm.standalone.eq(self.rtlink.o.data[2]),
             ),
             If(
-                (self.rtlink.o.address == 2) & self.rtlink.o.stb,
+                (self.rtlink.o.address == ADDRESS_WRITE.TCYCLE)
+                & self.rtlink.o.stb,  # noqa: W503
                 # Write cycle length
-                self.core.msm.m_end.eq(self.rtlink.o.data[:10]),
+                self.core.msm.cycle_length_input.eq(self.rtlink.o.data[:10]),
             ),
             If(
-                (self.rtlink.o.address == 3) & self.rtlink.o.stb,
+                (self.rtlink.o.address == ADDRESS_WRITE.PATTERNS)
+                & self.rtlink.o.stb,  # noqa: W503
                 # Write herald patterns and enables
                 *[
                     self.core.heralder.patterns[i].eq(
-                        self.rtlink.o.data[4 * i : 4 * (i + 1)]  # noqa
+                        self.rtlink.o.data[num_inputs * i : num_inputs * (i + 1)]
                     )
-                    for i in range(4)
+                    for i in range(num_herald_patterns)
                 ],
-                self.core.heralder.pattern_ens.eq(self.rtlink.o.data[16:20])
+                self.core.heralder.pattern_ens.eq(
+                    self.rtlink.o.data[
+                        herald_enable_bit_range[0] : herald_enable_bit_range[1]
+                    ]
+                )
             ),
         ]
 
         # Write is_master bit in rio_phy reset domain to not break 422ps trigger
         # forwarding on core.reset().
         self.sync.rio_phy += If(
-            (self.rtlink.o.address == 0) & self.rtlink.o.stb,
+            (self.rtlink.o.address == ADDRESS_WRITE.CONFIG) & self.rtlink.o.stb,
             self.core.msm.is_master.eq(self.rtlink.o.data[1]),
         )
+        # TODO: what is reset domain??
 
         read = Signal()
         read_timings = Signal()
         read_addr = Signal(3)
 
-        # Input timestamps are [apd0, apd1, apd2, apd3, ref]
+        # Input timestamps are [apd0, apd1, apd2, apd3, (OPTIONAL: reference)]
+        # timestamps will be 0 if they did not trigger
         input_timestamps = [gater.sig_ts for gater in self.core.apd_gaters]
-        input_timestamps.append(self.core.apd_gaters[0].ref_ts)
+        if reference_phy is not None:
+            input_timestamps.append(self.core.apd_gaters[0].ref_ts)
         cases = {}
-        timing_data = Signal(14)
+        timing_data = Signal(FULL_COUNTER_WIDTH)
         for i, ts in enumerate(input_timestamps):
             cases[i] = [timing_data.eq(ts)]
         self.comb += Case(read_addr, cases)
 
+        # on bus strobe, set signals to read register
         self.sync.rio += [
             If(read, read.eq(0)),
             If(
                 self.rtlink.o.stb,
                 read.eq(read_en),
-                read_timings.eq(self.rtlink.o.address[3:5] == 0b11),
-                read_addr.eq(self.rtlink.o.address[:3]),
+                read_timings.eq(
+                    self.rtlink.o.address[timing_bit_width : timing_bit_width + 2]
+                    == 0b11  # noqa: W503
+                ),
+                read_addr.eq(self.rtlink.o.address[:timing_bit_width]),
             ),
         ]
 
@@ -136,7 +216,7 @@ class Entangler(Module):
             Cat(self.core.msm.ready, self.core.msm.success, self.core.msm.timeout)
         )
 
-        reg_read = Signal(14)
+        reg_read = Signal(PHY_DATA_INPUT_WIDTH)
         cases = {}
         cases[0] = [reg_read.eq(status)]
         cases[1] = [reg_read.eq(self.core.msm.cycles_completed)]

@@ -9,37 +9,33 @@ from artiq.coredevice.rtio import rtio_input_timestamped_data
 from artiq.coredevice.rtio import rtio_output
 from artiq.language.core import delay_mu
 from artiq.language.core import kernel
+from artiq.language.types import TInt32
+from artiq.language.types import TInt64
+from artiq.language.types import TList
+from artiq.language.types import TTuple
 
-# Write only
-ADDR_W_CONFIG = 0
-ADDR_W_RUN = 1
-ADDR_W_TCYCLE = 2
-ADDR_W_HERALD = 3
-
-# Output channel addresses
-sequencer_422sigma = 0b1000 + 0
-sequencer_1092 = 0b1000 + 1
-sequencer_422ps_trigger = 0b1000 + 2
-sequencer_aux = 0b1000 + 3
-gate_apd0 = 0b1000 + 4
-gate_apd1 = 0b1000 + 5
-gate_apd2 = 0b1000 + 6
-gate_apd3 = 0b1000 + 7
-
-# Read only
-ADDR_R_STATUS = 0b10000
-ADDR_R_NCYCLES = 0b10000 + 1
-ADDR_R_TIMEREMAINING = 0b10000 + 2
-ADDR_R_NTRIGGERS = 0b10000 + 3
-timestamp_apd0 = 0b11000 + 0
-timestamp_apd1 = 0b11000 + 1
-timestamp_apd2 = 0b11000 + 2
-timestamp_apd3 = 0b11000 + 3
-timestamp_422ps = 0b11000 + 4
+from entangler.phy_registers import ADDRESS_READ, ADDRESS_WRITE
+from entangler.config import settings
 
 
 class Entangler:
     """Sequences remote entanglement experiments between a master and a slave."""
+
+    # label internal variables as constant to optimize compilation.
+    kernel_invariants = {
+        "core",
+        "channel",
+        "is_master",
+        "ref_period_mu",
+        "num_inputs",
+        "num_outputs",
+        "_SEQUENCER_TIME_MASK",
+        "_ADDRESS_WRITE",
+        "_ADDRESS_READ",
+        "_NUM_ALLOWED_PATTERNS",
+        "_PATTERN_LENGTH_MASK",
+        "_PATTERN_WIDTH",
+    }
 
     def __init__(self, dmgr, channel, is_master=True, core_device="core"):
         """Fast sequencer for generating remote entanglement.
@@ -55,6 +51,14 @@ class Entangler:
         self.channel = channel
         self.is_master = is_master
         self.ref_period_mu = self.core.seconds_to_mu(self.core.coarse_ref_period)
+        self.num_outputs = settings.NUM_OUTPUT_CHANNELS
+        self.num_inputs = settings.NUM_ENTANGLER_INPUT_SIGNALS
+        self._SEQUENCER_TIME_MASK = (1 << settings.FULL_COUNTER_WIDTH) - 1
+        self._ADDRESS_WRITE = ADDRESS_WRITE
+        self._ADDRESS_READ = ADDRESS_READ
+        self._NUM_ALLOWED_PATTERNS = settings.NUM_PATTERNS_ALLOWED
+        self._PATTERN_LENGTH_MASK = (1 << settings.NUM_PATTERNS_ALLOWED) - 1
+        self._PATTERN_WIDTH = settings.NUM_ENTANGLER_INPUT_SIGNALS
 
     @kernel
     def init(self):
@@ -62,7 +66,7 @@ class Entangler:
         self.set_config()  # Write is_master
 
     @kernel
-    def write(self, addr, value):
+    def _write(self, addr, value):
         """Write parameter.
 
         This method advances the timeline by one coarse RTIO cycle.
@@ -75,7 +79,7 @@ class Entangler:
         delay_mu(self.ref_period_mu)
 
     @kernel
-    def read(self, addr):
+    def _read(self, addr: TInt32) -> TInt32:
         """Read parameter.
 
         This method does not advance the timeline but consumes all slack.
@@ -91,13 +95,15 @@ class Entangler:
         return rtio_input_data(self.channel)
 
     @kernel
-    def set_config(self, enable=False, standalone=False):
+    def set_config(self, enable=False, standalone=True):
         """Configure the core gateware.
 
         Args:
             enable: allow core to drive outputs (otherwise they are connected to
                 normal TTLOut phys). Do not enable if the cycle length and timing
-                parameters are not set.
+                parameters are not set or you are trying to use the outputs elsewhere
+                for other things.
+                NOTE: you must also disable the entangler once done to use outputs.
             standalone: don't attempt synchronization with partner, just run when
                 ready. Used for testing and single-trap mode.
         """
@@ -108,55 +114,78 @@ class Entangler:
             data |= 1 << 1
         if standalone:
             data |= 1 << 2
-        self.write(ADDR_W_CONFIG, data)
+        self._write(self._ADDRESS_WRITE.CONFIG, data)
 
     @kernel
-    def set_timing_mu(self, channel, t_start_mu, t_stop_mu):
-        """Set the output channel timing and relative gate times.
+    def set_timing_mu(self, channel: TInt32, t_start_mu: TInt32, t_stop_mu: TInt32):
+        """Set the output channel timing and input gate times.
+
+        ``t_start_mu`` and ``t_start_mu`` define a window.
+        For an output, this window is when the output signal is HIGH (Logic 1).
+        For an input, this window is when the Entangler can register an input pulse
+        (positive edge triggered). Minimum values for t_start_mu/t_stop_mu is 8 (mu).
 
         Times are in machine units.
         For output channels the timing resolution is the coarse clock (8ns), and
         the times are relative to the start of the entanglement cycle.
-        For gate channels the time is relative to the reference pulse (422
-        pulse input) and has fine timing resolultion (1ns).
+        For gate channels, if you are using a reference pulse then the time is
+        relative to the reference pulse (422 pulse input).
+        Otherwise it is relative to the cycle start (IonPhoton).
+        Input gating has fine timing resolution (1ns).
 
-        The start / stop times can be between 0 and the cycle length.
-        (i.e for a cycle length of 100*8ns, stop can be at most 100*8ns)
-        If the stop time is after the cycle length, the pulse stops at the cycle
-        length. If the stop is before the start, the pulse stops at the cycle
-        length. If the start is after the cycle length there is no pulse.
+        The start / stop times can be between 0 and the cycle length
+        (i.e for a cycle length of 800ns, stop can be at most 800ns).
+        (in mu, 100*8ns is typically 800).
+        If the stop time is after the cycle length, the pulse stops at the cycle length.
+        If the start is after the cycle length there is no pulse.
+
+        Channels are numbered (0, num_outputs, num_inputs + num_outputs),
+        where the # of I/O is defined in settings.toml. That is, the outputs come first,
+        and then the inputs. So to find the channel number for input #2 (0-indexed):
+        ``in2chan = driver.num_outputs + 2``.
+        Likewise, input #0: ``in0chan = driver.num_outputs + 0``.
+
+        Note that changing the number of inputs/outputs requires re-compiling the
+        gateware for the Kasli/Entangler.
+
+        NOTE: if both ``gate_start, gate_stop < 8``, or if ``gate_start >= gate_stop``,
+        the inputs will not register.
         """
-        if channel < gate_apd0:
+        if channel < self.num_outputs:
+            # remove the fine timestamp from outputs
             t_start_mu = t_start_mu >> 3
             t_stop_mu = t_stop_mu >> 3
 
+        # TODO: don't know why add 1...
         t_start_mu += 1
         t_stop_mu += 1
 
-        # Truncate to 14 bits
-        t_start_mu &= 0x3FFF
-        t_stop_mu &= 0x3FFF
-        self.write(channel, (t_stop_mu << 16) | t_start_mu)
+        # Truncate to settings.FULL_COUNTER_WIDTH.
+        t_start_mu &= self._SEQUENCER_TIME_MASK
+        t_stop_mu &= self._SEQUENCER_TIME_MASK
+        # Convert to channel write address
+        channel = self._ADDRESS_WRITE.TIMING + channel
+        self._write(channel, (t_stop_mu << 16) | t_start_mu)
 
     @kernel
     def set_timing(self, channel, t_start, t_stop):
         """Set the output channel timing and relative gate times.
 
-        Times are in seconds. See set_timing_mu() for details.
+        Times are in seconds. See :meth:`set_timing_mu` for details.
         """
         t_start_mu = np.int32(self.core.seconds_to_mu(t_start))
         t_stop_mu = np.int32(self.core.seconds_to_mu(t_stop))
         self.set_timing_mu(channel, t_start_mu, t_stop_mu)
 
     @kernel
-    def set_cycle_length_mu(self, t_cycle_mu):
+    def set_cycle_length_mu(self, t_cycle_mu: TInt32):
         """Set the entanglement cycle length.
 
         If the herald module does not signal success by this time the loop
         repeats. Resolution is coarse_ref_period.
         """
         t_cycle_mu = t_cycle_mu >> 3
-        self.write(ADDR_W_TCYCLE, t_cycle_mu)
+        self._write(self._ADDRESS_WRITE.TCYCLE, t_cycle_mu)
 
     @kernel
     def set_cycle_length(self, t_cycle):
@@ -168,41 +197,47 @@ class Entangler:
         self.set_cycle_length_mu(t_cycle_mu)
 
     @kernel
-    def set_heralds(self, heralds):
+    def set_patterns(self, patterns: TList(TInt32)):
         """Set the count patterns that cause the entangler loop to exit.
 
         Up to 4 patterns can be set.
-        Each pattern is a 4 bit number, with the order (LSB first)
-        apd1_a, apd1_b, apd2_a, apd2_b.
-        E.g. to set a herald on apd1_a only: set_heralds(0b0001)
-        to herald on apd1_b, apd2_b: set_heralds(0b1010)
-        To herald on both: set_heralds(0b0001, 0b1010).
+        Each pattern is a 4 bit number, with the order (MSB first):
+            input3, input2, input1, input0
+
+        E.g. to set a match on input0 only: set_patterns([0b0001])
+        to match on BOTH input3 & input1: set_patterns([0b1010])
+        To match on either (input0) or (input1 & input3): set_patterns([0b0001, 0b1010]).
+
+        NOTE: inputs are in numerical order in their respective DIO/TTL bank.
+        Thus, input0 is usually either TTLX-IN0 or TTLX-IN4.
         """
         data = 0
-        assert len(heralds) <= 4
-        for i in range(len(heralds)):
-            data |= (heralds[i] & 0xF) << (4 * i)
-            data |= 1 << (16 + i)
-        self.write(ADDR_W_HERALD, data)
+        assert len(patterns) <= self._NUM_ALLOWED_PATTERNS
+        for i in range(len(patterns)):
+            data |= (patterns[i] & self._PATTERN_LENGTH_MASK) << (
+                self._PATTERN_WIDTH * i
+            )
+            data |= 1 << (self._NUM_ALLOWED_PATTERNS * self._PATTERN_WIDTH + i)
+        self._write(self._ADDRESS_WRITE.PATTERNS, data)
 
     @kernel
-    def run_mu(self, duration_mu):
+    def run_mu(self, duration_mu) -> TTuple([TInt64, TInt32]):
         """Run the entanglement sequence until success, or duration_mu has elapsed.
 
-        THIS IS A BLOCKING CALL.
+        NOTE: THIS IS A BLOCKING CALL (eats all slack).
 
         Args:
             duration_mu (int): Timeout duration of this entanglement cycle, in mu.
 
         Returns:
-            tuple of [timestamp, reason].
+            tuple of (timestamp, reason).
             timestamp is the RTIO time at the end of the final cycle.
             reason is 0x3fff if there was a timeout, or a bitfield giving the
             herald matches if there was a success.
 
         """
         duration_mu = duration_mu >> 3
-        self.write(ADDR_W_RUN, duration_mu)
+        self._write(self._ADDRESS_WRITE.RUN, duration_mu)
         # Following func is only in ARTIQ >= 5, don't have in dev environment
         # pylint: disable=no-name-in-module
         return rtio_input_timestamped_data(np.int64(-1), self.channel)
@@ -211,16 +246,23 @@ class Entangler:
     def run(self, duration):
         """Run the entanglement sequence.
 
-        See run_mu() for details. NOTE: this is a blocking call.
-        Duration is in seconds.
+        See :meth:`run_mu` for details. NOTE: this is a blocking call (eats all slack).
+        Duration is in seconds, max of about 4 seconds.
         """
         duration_mu = np.int32(self.core.seconds_to_mu(duration))
         return self.run_mu(duration_mu)
 
     @kernel
     def get_status(self):
-        """Get status of the entangler gateware."""
-        return self.read(ADDR_R_STATUS)
+        """Get status of the entangler gateware.
+
+        Returns:
+            (int): 3 flag bits, MSB -> LSB:
+            last run timed out; last run was a success; ready to start
+            NOTE: ready_to_start is usually not set b/c only asserted during run()
+
+        """
+        return self._read(self._ADDRESS_READ.STATUS)
 
     @kernel
     def get_ncycles(self):
@@ -229,7 +271,7 @@ class Entangler:
         This value is reset every :meth:`run` call, so this is the number since the
         last :meth:`run` call.
         """
-        return self.read(ADDR_R_NCYCLES)
+        return self._read(self._ADDRESS_READ.NCYCLES)
 
     @kernel
     def get_ntriggers(self):
@@ -238,18 +280,25 @@ class Entangler:
         This value is reset every :meth:`run` call, so this is the number since the
         last :meth:`run` call.
         """
-        return self.read(ADDR_R_NTRIGGERS)
+        return self._read(self._ADDRESS_READ.NTRIGGERS)
 
     @kernel
     def get_time_remaining(self):
-        """Return the remaining number of clock cycles until the core times out."""
-        return self.read(ADDR_R_TIMEREMAINING)
+        """Return the remaining number of clock cycles until the core times out.
+
+        NOTE: This only works as expected if the Entangler matches a pattern.
+        This cannot be used during :meth:`run` because that call blocks execution.
+        """
+        return self._read(self._ADDRESS_READ.TIME_REMAINING)
 
     @kernel
-    def get_timestamp_mu(self, channel):
-        """Get the input timestamp for a channel.
+    def get_timestamp_mu(self, channel: TInt32) -> TInt32:
+        """Get the input timestamp for an input channel.
+
+        Channels are numbered from (0, settings.NUM_ENTANGLER_INPUT_SIGNALS)
+        (add 1 if using a reference).
 
         The timestamp is the time offset, in mu, from the start of the cycle to
         the detected rising edge.
         """
-        return self.read(channel)
+        return self._read(np.int32(self._ADDRESS_READ.TIMESTAMP) + channel)

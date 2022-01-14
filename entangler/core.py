@@ -1,4 +1,8 @@
-"""FPGA HDL modules that describe core 'Entangler' functionality."""
+"""FPGA HDL modules that describe core 'Entangler' functionality.
+
+Note: STB = "strobe", I forgot that one.
+"""
+import logging
 import typing
 
 import migen.build.generic_platform as platform
@@ -12,15 +16,10 @@ from migen import NextState
 from migen import NextValue
 from migen import Signal
 
-# Width of sequence duration counters and the coarse part of input timestamps
-# (units of clock cycles).
-counter_width = 11
+from entangler.config import settings
 
-# The 422ps laser system is shared, so for ease of use we OR the slave's RTIO TTL output
-# with the master's signal as long as the entangler core isn't active. The timing will
-# be different from entangler-driven use, but this is only for auxiliary calibration
-# purposes.
-SEQUENCER_IDX_422ps = 2
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ChannelSequencer(Module):
@@ -39,15 +38,15 @@ class ChannelSequencer(Module):
 
     """
 
-    def __init__(self, m):
+    def __init__(self, m: Signal):
         """Output a signal for a given time.
 
         Args:
             m: a ``counter_width`` counter :class:`Signal` that governs the output
                 times.
         """
-        self.m_start = Signal(counter_width)
-        self.m_stop = Signal(counter_width)
+        self.m_start = Signal(settings.COARSE_COUNTER_WIDTH)
+        self.m_stop = Signal(settings.COARSE_COUNTER_WIDTH)
         self.clear = Signal()
 
         self.output = Signal()
@@ -56,32 +55,37 @@ class ChannelSequencer(Module):
 
         self.stb_start = Signal()
         self.stb_stop = Signal()
+        output_enable = Signal()
+        sync_output = Signal()
 
         self.comb += [
             self.stb_start.eq(m == self.m_start),
             self.stb_stop.eq(m == self.m_stop),
+            output_enable.eq(~self.clear),
+            self.output.eq(output_enable & sync_output),
         ]
 
         self.sync += [
-            If(self.stb_start, self.output.eq(1)).Else(
-                If(self.stb_stop, self.output.eq(0))
+            If(self.stb_start, sync_output.eq(1)).Else(
+                If(self.stb_stop, sync_output.eq(0))
             ),
-            If(self.clear, self.output.eq(0)),
+            If(self.clear, sync_output.eq(0)),
         ]
 
 
 class TriggeredInputGater(Module):
     """Event gater that connects to ttl_serdes_generic phys.
 
-    The gate is defined as a time window after a reference event occurs.
-    The reference time is that of a rising edge on phy_ref. There is no protection
-    against multiple edges on phy_ref.
-    The gate start and stop are specified as offsets in mu (=1ns mostly) from this
+    The gate is defined as a time window after a reference event occurs
+    (i.e. window = (t_ref + gate_start, t_ref + gate_stop)).
+    The reference time is that of a rising edge on ``phy_ref``. There is no protection
+    against multiple edges on ``phy_ref``.
+    The gate start and stop are specified as offsets in mu (=1 ns mostly) from this
     reference event.
 
     The module is triggered after it has seen a reference event, then subsequently
-    a signal edge in the gate window.
-    Once the module is triggered subsequent signal edges are ignored.
+    a signal edge (from ``phy_sig``) in the gate window.
+    Once the module is triggered, then subsequent signal edges are ignored.
     Clear has to be asserted to clear the reference edge and the triggered flag.
 
     The start gate offset must be at least 8 * mu.
@@ -95,7 +99,9 @@ class TriggeredInputGater(Module):
 
         n_fine = len(phy_ref.fine_ts)
 
-        full_timestamp_width = counter_width + n_fine
+        full_timestamp_width = settings.COARSE_COUNTER_WIDTH + n_fine
+        # TODO: move assertion to where it actually matters, i.e. at PHY level
+        assert full_timestamp_width == settings.FULL_COUNTER_WIDTH
 
         self.ref_ts = Signal(full_timestamp_width)
         self.sig_ts = Signal(full_timestamp_width)
@@ -117,13 +123,13 @@ class TriggeredInputGater(Module):
 
         self.sync += [
             If(
-                phy_ref.stb_rising,
+                phy_ref.stb,
                 self.got_ref.eq(1),
                 self.ref_ts.eq(t_ref),
                 abs_gate_start.eq(self.gate_start + t_ref),
                 abs_gate_stop.eq(self.gate_stop + t_ref),
             ),
-            If(self.clear, self.got_ref.eq(0), self.triggered.eq(0)),
+            If(self.clear, self.got_ref.eq(0), self.triggered.eq(0), self.sig_ts.eq(0)),
         ]
 
         past_window_start = Signal()
@@ -134,12 +140,85 @@ class TriggeredInputGater(Module):
             t_sig.eq(Cat(phy_sig.fine_ts, m)),
             past_window_start.eq(t_sig >= abs_gate_start),
             before_window_end.eq(t_sig <= abs_gate_stop),
-            triggering.eq(past_window_start & before_window_end),
+            triggering.eq(past_window_start & before_window_end & ~self.clear),
         ]
 
         self.sync += [
             If(
-                phy_sig.stb_rising & ~self.triggered & triggering,
+                phy_sig.stb & ~self.triggered & triggering,
+                self.triggered.eq(triggering),
+                self.sig_ts.eq(t_sig),
+            )
+        ]
+
+
+class UntriggeredInputGater(Module):
+    """Event gater that connects to ttl_serdes_generic phys.
+
+    The gate is defined as a time window of a counter.
+    The gate start and stop are specified as absolute values of the counter,
+    in MU (=1 ns mostly).
+
+    The module is triggered if it sees a signal edge (from ``phy_sig``) in the
+    gate window.
+    Once the module is triggered, then subsequent signal edges are ignored.
+    Clear has to be asserted to clear the triggered flag.
+
+    NOTE: if both ``gate_start, gate_stop < 8``, or if ``gate_start >= gate_stop``,
+    this module will not trigger.
+    """
+
+    def __init__(self, m, phy_sig):
+        """Define the gateware to gate & latch inputs."""
+        self.clear = Signal()
+
+        self.is_window_valid = Signal()  # output
+        self.triggered = Signal()
+
+        n_fine = len(phy_sig.fine_ts)
+
+        full_timestamp_width = settings.COARSE_COUNTER_WIDTH + n_fine
+        # TODO: move assertion to where it actually matters, i.e. at PHY level
+        assert full_timestamp_width == settings.FULL_COUNTER_WIDTH
+
+        self.sig_ts = Signal(full_timestamp_width)
+
+        # In mu
+        self.gate_start = Signal(full_timestamp_width)
+        self.gate_stop = Signal(full_timestamp_width)
+
+        # # #
+
+        self.sync += [
+            # reset on clear
+            If(self.clear, self.triggered.eq(0), self.sig_ts.eq(0))
+        ]
+
+        past_window_start = Signal()
+        before_window_end = Signal()
+        triggering = Signal()
+        t_sig = Signal(full_timestamp_width)
+        self.comb += [
+            t_sig.eq(Cat(phy_sig.fine_ts, m)),
+            self.is_window_valid.eq(
+                (self.gate_start >= 8)
+                & (self.gate_stop >= 8)
+                & (self.gate_start < self.gate_stop)
+            ),
+            past_window_start.eq(t_sig >= self.gate_start),
+            before_window_end.eq(t_sig <= self.gate_stop),
+            triggering.eq(
+                past_window_start
+                & before_window_end
+                & ~self.clear
+                & self.is_window_valid
+            ),
+        ]
+
+        self.sync += [
+            # register input event
+            If(
+                phy_sig.stb & ~self.triggered & triggering,
                 self.triggered.eq(triggering),
                 self.sig_ts.eq(t_sig),
             )
@@ -179,16 +258,73 @@ class PatternMatcher(Module):
 
 
 class MainStateMachine(Module):
-    """State machine to run the entanglement generation process."""
+    """State machine to run the entanglement generation process.
 
-    def __init__(self, counter_width=10):
+    Runs continuously in "cycles" until ``timeout`` or until entanglement occurs
+    (determined by an input signal ``herald``).
+
+    Attributes:
+        m (:class:`Signal`(counter_width)): Global counter, provides current
+            position in cycle.
+        time_remaining (:class:`Signal`(32)): Clock cycles remaining until
+            the state machine times out. OUTPUT ONLY, only valid while running
+        timeout_input (:class:`Signal`(32)): INPUT, sets the time until
+            ``timeout`` for the next run of the state machine. This stops
+            the entanglement cycles (i.e. outputting signals then monitoring).
+        cycles_completed (:class:`Signal`(~14 bits)): number of entanglement
+            cycles/loops completed since most recent start. Exact width is
+            derived from ``settings.MAX_CYCLES_PER_RUN``.
+        run_stb (:class:`Signal`(1)): Input signal/strobe, pulse high to start
+            the state machine/entanglement generation loops.
+        done_stb (:class:`Signal`(1)): Output signal, pulses high to signal
+            completion (either timeout or success).
+        running (:class:`Signal`(1)): High the whole time that the state
+            machine is running.
+        timeout (:class:`Signal`(1)): Output signal, set if the state machine
+            times out.
+        success (:class:`Signal`(1)): Asserted when the state machine achieves
+            success/pattern match/entanglement.
+        ready (:class:`Signal`(1)): OUTPUT, effectively whether the state
+            machine can continue running. Asserted when run_stb is pulsed, and
+            cleared on success or timeout.
+        herald (:class:`Signal`): INPUT, whether entanglement has been heralded.
+            If true, then the state machine declares success and stops running
+            (after the end of the cycle).
+        is_master (:class:`Signal`): Input signal, sets this instance of the
+            state machine as a master, i.e. the main state machine
+            driver/controller.
+        standalone (:class:`Signal`): If this state machine is independent,
+            and doesn't have a partner/slave state machine.
+        act_as_master (:class:`Signal`): OUTPUT, If the state machine is acting in
+            master configuration.
+        trigger_out (:class:`Signal`): Trigger signal from master state machine
+            to slave.
+        trigger_in_raw (:class:`Signal`): raw trigger input from the master ->
+            slave state machine.
+        success_in_raw (:class:`Signal`): raw success input from the master state
+            machine (used when slave).
+        timeout_in_raw (:class:`Signal`): raw signal input (as slave) from master
+            when the state machine sequence has timed out (too many cycles
+            without success).
+        slave_ready_raw (:class:`Signal`): Signal from slave -> master that the
+            slave is ready.
+        cycle_length_input (:class:`Signal`(``counter_width``)): INPUT, the
+            number of clock cycles that each entanglement loop should run for
+            (units of coarse clock, should be 8 ns).
+        cycle_starting (:class:`Signal`): asserted when an entanglement cycle
+            (loop of the state machine) is starting.
+        cycle_ending (:class:`Signal`): asserted when an entanglement cycle
+            (loop of the state machine) is ending.
+
+    """
+
+    def __init__(self, counter_width=settings.COARSE_COUNTER_WIDTH):
         """Define the state machine logic for running the input & output sequences."""
         self.m = Signal(counter_width)  # Global cycle-relative time.
         self.time_remaining = Signal(32)  # Clock cycles remaining before timeout
-        self.time_remaining_buf = Signal(32)
-        self.cycles_completed = Signal(
-            14
-        )  # How many iterations of the loop have completed since last start
+        self.timeout_input = Signal(32)
+        # How many iterations of the loop have completed since last start
+        self.cycles_completed = Signal(max=settings.MAX_CYCLES_PER_RUN)
 
         self.run_stb = Signal()  # Pulsed to start core running until timeout or success
         self.done_stb = (
@@ -210,6 +346,7 @@ class MainStateMachine(Module):
 
         self.trigger_out = Signal()  # Trigger to slave
 
+        # *** Sync signals from Master <-> Slave ***
         # Unregistered inputs from master
         self.trigger_in_raw = Signal()
         self.success_in_raw = Signal()
@@ -218,7 +355,7 @@ class MainStateMachine(Module):
         # Unregistered input from slave
         self.slave_ready_raw = Signal()
 
-        self.m_end = Signal(
+        self.cycle_length_input = Signal(
             counter_width
         )  # Number of clock cycles to run main loop for
 
@@ -230,7 +367,7 @@ class MainStateMachine(Module):
 
         # # #
 
-        self.comb += self.cycle_ending.eq(self.m == self.m_end)
+        self.comb += self.cycle_ending.eq(self.m == self.cycle_length_input)
 
         self.trigger_in = Signal()
         self.success_in = Signal()
@@ -251,12 +388,18 @@ class MainStateMachine(Module):
         # The core times out if time_remaining countdown reaches zero, or,
         # if we are a slave, if the master has timed out.
         # This is required to ensure the slave syncs with the master
-        self.comb += self.timeout.eq(
-            (self.time_remaining == 0) | (~self.act_as_master & self.timeout_in)
-        )
+        # Not allowed to timeout if the state machine succeeded.
+        has_succeeded = Signal()
+        self.comb += [
+            has_succeeded.eq(self.success | self.success_in),
+            self.timeout.eq(
+                ((self.time_remaining == 0) & ~has_succeeded)
+                | (~self.act_as_master & self.timeout_in)
+            ),
+        ]
 
         self.sync += [
-            If(self.run_stb, self.time_remaining.eq(self.time_remaining_buf)).Else(
+            If(self.run_stb, self.time_remaining.eq(self.timeout_input)).Else(
                 If(~self.timeout, self.time_remaining.eq(self.time_remaining - 1))
             )
         ]
@@ -267,9 +410,6 @@ class MainStateMachine(Module):
         self.comb += finishing.eq(
             ~self.run_stb & self.running & (self.timeout | self.success)
         )
-        # Done asserted at the at the end of the successful / timedout cycle
-        self.comb += done.eq(finishing & self.cycle_starting)
-        self.comb += self.done_stb.eq(done & ~done_d)
 
         # Ready asserted when run_stb is pulsed, and cleared on success or timeout
         self.sync += [
@@ -288,14 +428,20 @@ class MainStateMachine(Module):
 
         fsm.act(
             "IDLE",
-            self.cycle_starting.eq(1),
             If(
                 self.act_as_master,
                 If(
                     ~finishing & self.ready & (self.slave_ready | self.standalone),
                     NextState("TRIGGER_SLAVE"),
+                    self.cycle_starting.eq(1),
                 ),
-            ).Else(If(~finishing & self.ready & self.trigger_in, NextState("COUNTER"))),
+            ).Else(
+                If(
+                    ~finishing & self.ready & self.trigger_in,
+                    NextState("COUNTER"),
+                    self.cycle_starting.eq(1),
+                )
+            ),
             NextValue(self.m, 0),
             self.trigger_out.eq(0),
         )
@@ -322,12 +468,29 @@ class MainStateMachine(Module):
             NextState("IDLE"),
         )
 
+        # Done asserted at the at the end of the successful / timedout cycle
+        in_idle_state = fsm.ongoing("IDLE")
+        self.comb += done.eq(finishing & in_idle_state)
+        self.comb += self.done_stb.eq(done & ~done_d)
+
 
 class EntanglerCore(Module):
     """Highest block of the :mod:`entangler` gateware.
 
     This top-level block incorporates all the other subcomponents in this file,
     and is the primary one that should be used by end-users.
+
+    Attributes:
+        enable (Signal): INPUT, enables starting the Entangler protocol.
+            Functionally, switches the outputs from separate ARTIQ TTLOuts to being
+            driven by the Entangler.
+        uses_reference_trigger (Signal): OUTPUT, whether this entangler is using
+            a reference signal for its trigger. This is static, defined at compile time.
+        triggers_received (Signal(max=settings.MAX_TRIGGER_COUNTS)): OUTPUT,
+            number of triggers received in one run of the Entangler.
+            This is only valid if ``uses_reference_trigger`` is set to 1.
+            Otherwise, it will only ever be ``0``.
+
     """
 
     def __init__(
@@ -336,43 +499,93 @@ class EntanglerCore(Module):
         output_pads: typing.Sequence[platform.Pins],
         passthrough_sigs: typing.Sequence[Signal],
         input_phys: typing.Sequence["PHY"],
+        reference_phy=None,
         simulate: bool = False,
     ):
         """Define the submodules & connections between them to form an ``Entangler``.
 
         Args:
-            core_link_pads (typing.Sequence[platform.Pins]): A list of 4 FPGA pins
-                used to link a master & slave ``Entangler`` device.
+            core_link_pads (typing.Sequence[platform.Pins]): A list of 5 FPGA pins
+                (Oxford) or 4 pins (UMD) used to link a master & slave
+                ``Entangler`` device.
             output_pads (typing.Sequence[platform.Pins]): The output pins that will
                 be driven by the state machines to output the entanglement generation
-                signals.
+                signals. Number is determined by ``settings.NUM_OUTPUT_CHANNELS``.
             passthrough_sigs (typing.Sequence[Signal]): The signals that should be
                 passed through to the ``output_pads`` when the ``Entangler`` is not
-                running.
+                running. Should be the same length as ``output_pads``
+                (unless you're using a running output, in which case output_pads
+                should be one longer).
             input_phys (typing.Sequence["PHY"]): TTLInput physical gateware modules
-                that register an input TTL event. Expects a list of 4, with
-                the first 4 being the input APD/TTL signals, and the last one
-                as a sync signal with the entanglement laser.
+                that register an input TTL event. Expects a list of
+                ``settings.NUM_ENTANGLER_INPUT_SIGNALS`` input APD/TTL signals.
+            reference_phy (PHY): Reference input that provides the gating trigger
+                for the other inputs. In Oxford's experiment, this is a signal
+                from a 422nm (ps?) pulsed laser.
             simulate (bool, optional): If this should be instantiated in
                 simulation mode. If it is simulated, it disables several options like
                 the passthrough_sigs. Defaults to False.
         """
         self.enable = Signal()
+
+        # TODO: more input length assertions
+
+        # 422ps trigger event counter. We use got_ref from the first gater for
+        # convenience (any other channel would work just as well).
+        # Unused if
+        self.uses_reference_trigger = Signal()
+        self.triggers_received = Signal(max=settings.MAX_TRIGGER_COUNTS)
+
         # # #
 
-        phy_apds = input_phys[0:4]
-        phy_422pulse = input_phys[4]
+        assert len(input_phys) == settings.NUM_ENTANGLER_INPUT_SIGNALS  # noqa: E203
+        use_reference_pulse = reference_phy is not None
+        if core_link_pads is None or len(core_link_pads) == 0 and not simulate:
+            # option to disable inter-entangler comm if not simulating
+            _LOGGER.warning(
+                "No inter-Entangler pads provided. "
+                "Not enabling inter-Kasli communication"
+            )
+            core_comm_disabled = True
+        else:
+            assert simulate or len(core_link_pads) >= 5 if use_reference_pulse else 4
+            core_comm_disabled = False
+
+        num_outputs = settings.NUM_OUTPUT_CHANNELS
+        if simulate:
+            use_running_output = False
+        else:
+            # only set use_running_output if have an extra output pad
+            use_running_output = len(output_pads) == num_outputs + 1
+            assert len(output_pads) in (num_outputs, num_outputs + 1)
 
         self.submodules.msm = MainStateMachine()
 
-        self.submodules.sequencers = [ChannelSequencer(self.msm.m) for _ in range(4)]
-
-        self.submodules.apd_gaters = [
-            TriggeredInputGater(self.msm.m, phy_422pulse, phy_apd)
-            for phy_apd in phy_apds
+        self.submodules.sequencers = [
+            ChannelSequencer(self.msm.m) for _ in range(settings.NUM_OUTPUT_CHANNELS)
         ]
 
-        self.submodules.heralder = PatternMatcher(num_inputs=4, num_patterns=4)
+        # Add a strobe to clear the inputs/outputs on enable
+        enable_d = Signal()
+        enable_stb = Signal()
+        self.sync += enable_d.eq(self.enable)
+        self.comb += enable_stb.eq(self.enable & ~enable_d)
+
+        if use_reference_pulse:
+            gaters = [
+                TriggeredInputGater(self.msm.m, reference_phy, phy_apd)
+                for phy_apd in input_phys
+            ]
+        else:
+            gaters = [
+                UntriggeredInputGater(self.msm.m, phy_apd) for phy_apd in input_phys
+            ]
+        self.submodules.apd_gaters = gaters
+
+        self.submodules.heralder = PatternMatcher(
+            num_inputs=settings.NUM_ENTANGLER_INPUT_SIGNALS,
+            num_patterns=settings.NUM_PATTERNS_ALLOWED,
+        )
 
         if not simulate:
             # To be able to trigger the pulse picker from both systems without
@@ -389,13 +602,6 @@ class EntanglerCore(Module):
             for i, (sequencer, pad, passthrough_sig) in enumerate(
                 zip(self.sequencers, output_pads, passthrough_sigs)
             ):
-                if i == SEQUENCER_IDX_422ps:
-                    local_422ps_out = Mux(
-                        self.enable, sequencer.output, passthrough_sig
-                    )
-                    passthrough_sig = passthrough_sig | (
-                        slave_422ps_raw & self.msm.is_master
-                    )
                 self.specials += Instance(
                     "OBUFDS",
                     i_I=Mux(self.enable, sequencer.output, passthrough_sig),
@@ -406,17 +612,25 @@ class EntanglerCore(Module):
             # Connect the "running" output, which is asserted when the core is
             # running, or controlled by the passthrough signal when the core is
             # not running.
-            self.specials += Instance(
-                "OBUFDS",
-                i_I=Mux(self.msm.running, 1, passthrough_sigs[4]),
-                o_O=output_pads[4].p,
-                o_OB=output_pads[4].n,
-            )
+            if use_running_output:
+                _LOGGER.info(
+                    "Using a 'RUNNING?' output, assigned to %s-%d",
+                    output_pads[-1].name,
+                    (len(output_pads) - 1) % 8,
+                )
+                self.specials += Instance(
+                    "OBUFDS",
+                    i_I=self.msm.running,
+                    o_O=output_pads[-1].p,
+                    o_OB=output_pads[-1].n,
+                )
+            else:
+                _LOGGER.debug("Not using a 'RUNNING?' output")
 
             def ts_buf(pad, sig_o, sig_i, en_out):
                 # diff. IO.
                 # sig_o: output from FPGA
-                # sig_i: intput to FPGA
+                # sig_i: input to FPGA
                 # en_out: enable FPGA output driver
                 self.specials += Instance(
                     "IOBUFDS_INTERMDISABLE",
@@ -432,39 +646,44 @@ class EntanglerCore(Module):
                     io_IOB=pad.n,
                 )
 
-            # Interface between master and slave core.
+            if not core_comm_disabled:
+                # Interface between master and slave core.
 
-            # Slave -> master:
-            ts_buf(
-                core_link_pads[0],
-                self.msm.ready,
-                self.msm.slave_ready_raw,
-                ~self.msm.is_master & ~self.msm.standalone,
-            )
+                # Slave -> master:
+                ts_buf(
+                    core_link_pads[0],
+                    self.msm.ready,
+                    self.msm.slave_ready_raw,
+                    ~self.msm.is_master & ~self.msm.standalone,
+                )
 
-            ts_buf(
-                core_link_pads[4], local_422ps_out, slave_422ps_raw, ~self.msm.is_master
-            )
+                if use_reference_pulse:
+                    ts_buf(
+                        core_link_pads[4],
+                        local_422ps_out,
+                        slave_422ps_raw,
+                        ~self.msm.is_master,
+                    )
 
-            # Master -> slave:
-            ts_buf(
-                core_link_pads[1],
-                self.msm.trigger_out,
-                self.msm.trigger_in_raw,
-                self.msm.is_master,
-            )
-            ts_buf(
-                core_link_pads[2],
-                self.msm.success,
-                self.msm.success_in_raw,
-                self.msm.is_master,
-            )
-            ts_buf(
-                core_link_pads[3],
-                self.msm.timeout,
-                self.msm.timeout_in_raw,
-                self.msm.is_master,
-            )
+                # Master -> slave:
+                ts_buf(
+                    core_link_pads[1],
+                    self.msm.trigger_out,
+                    self.msm.trigger_in_raw,
+                    self.msm.is_master,
+                )
+                ts_buf(
+                    core_link_pads[2],
+                    self.msm.success,
+                    self.msm.success_in_raw,
+                    self.msm.is_master,
+                )
+                ts_buf(
+                    core_link_pads[3],
+                    self.msm.timeout,
+                    self.msm.timeout_in_raw,
+                    self.msm.is_master,
+                )
 
         # Connect heralder inputs.
         self.comb += self.heralder.sig.eq(Cat(*(g.triggered for g in self.apd_gaters)))
@@ -473,19 +692,27 @@ class EntanglerCore(Module):
         self.comb += [
             gater.clear.eq(self.msm.cycle_starting) for gater in self.apd_gaters
         ]
+        # TODO: remove run_stb here??
         self.comb += [
-            sequencer.clear.eq(self.msm.cycle_starting) for sequencer in self.sequencers
+            sequencer.clear.eq(
+                (self.msm.cycle_starting | self.msm.run_stb | enable_stb)
+            )
+            for sequencer in self.sequencers
+        ]
+        self.comb += [
+            self.msm.herald.eq(self.heralder.is_match),
+            self.uses_reference_trigger.eq(int(use_reference_pulse)),
         ]
 
-        self.comb += self.msm.herald.eq(self.heralder.is_match)
-
-        # 422ps trigger event counter. We use got_ref from the first gater for
-        # convenience (any other channel would work just as well).
-        self.triggers_received = Signal(14)
         self.sync += [
             If(self.msm.run_stb, self.triggers_received.eq(0)).Else(
                 If(
-                    self.msm.cycle_ending & self.apd_gaters[0].got_ref,
+                    self.msm.cycle_ending
+                    & (
+                        self.apd_gaters[0].got_ref
+                        if use_reference_pulse
+                        else int(False)
+                    ),
                     self.triggers_received.eq(self.triggers_received + 1),
                 )
             )
