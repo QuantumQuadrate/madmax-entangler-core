@@ -119,6 +119,7 @@ if _ARTIQ_MAJOR_VERSION in {6, 7}:
 else:
     _default_iostandard = "LVDS_25"  # ARTIQ 5
 
+
 # pylint: disable=protected-access
 class EntanglerEEM(eem_mod._EEM):
     """Define the pins and gateware/logic used by the Entangler.
@@ -129,11 +130,11 @@ class EntanglerEEM(eem_mod._EEM):
 
     @staticmethod
     def io(
-        eem_dio: typing.Sequence[int],
-        eem_interface: int = None,
-        uses_reference: bool = False,
-        interface_on_lower: bool = True,
-        iostandard: typing.Union[str, IOStandard] = _default_iostandard,
+            eem_dio: typing.Sequence[int],
+            eem_interface: int = None,
+            uses_reference: bool = False,
+            interface_on_lower: bool = True,
+            iostandard: typing.Union[str, IOStandard] = _default_iostandard,
     ) -> typing.Sequence["Pad_Assignments"]:
         """Define the IO pins used by the Entangler device.
 
