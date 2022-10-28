@@ -29,6 +29,13 @@ _LOGGER = logging.getLogger(__name__)
 # packaging.version.parse() preferred, but the ARTIQ version is not PEP440 compliant
 _ARTIQ_MAJOR_VERSION = int(_artiq_version_str.split(".")[0])
 
+if _ARTIQ_MAJOR_VERSION >= 6:
+    from artiq.gateware.rtio.phy import edge_counter
+
+    EDGE_COUNTER_CLS = edge_counter.SimpleEdgeCounter
+else:
+    EDGE_COUNTER_CLS = None
+
 
 def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
     """Add an Ion-Photon entangling gateware device to an ARTIQ SoC.
@@ -41,6 +48,7 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
             {OPTIONAL} "running_output": bool
             {OPTIONAL} "link_eem": int,
             {OPTIONAL} "interface_on_lower": bool,
+            {OPTIONAL} "edge_counter": bool,
         }
 
     More details in :class:`EntanglerEEM`.
@@ -79,6 +87,7 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
         uses_reference=using_ref,
         running_output=running_signal,
         interface_on_lower=peripheral.get("interface_on_lower", True),
+        edge_counter_cls=EDGE_COUNTER_CLS if peripheral.get("edge_counter") else None
     )
 
 
@@ -228,13 +237,14 @@ class EntanglerEEM(eem_mod._EEM):
 
     @classmethod
     def add_std(
-        cls,
-        target: "MiniSoC",  # noqa: F821
-        eem_dio: typing.Sequence[int],
-        eem_interface: typing.Optional[int] = None,
-        uses_reference: bool = False,
-        running_output: bool = False,
-        interface_on_lower: bool = True,
+            cls,
+            target: "MiniSoC",  # noqa: F821
+            eem_dio: typing.Sequence[int],
+            eem_interface: typing.Optional[int] = None,
+            uses_reference: bool = False,
+            running_output: bool = False,
+            interface_on_lower: bool = True,
+            edge_counter_cls: typing.Optional[typing.Type[EDGE_COUNTER_CLS]] = None
     ):
         """Add an Entangler PHY to a Kasli gateware module.
 
@@ -259,6 +269,8 @@ class EntanglerEEM(eem_mod._EEM):
                 Basically, if no reference is used, should the 4 pins for
                 communication be on the lower or upper half of the DIO bank.
                 Defaults to True.
+            edge_counter_cls (optional): Add edge counters to input pints.
+                Defaults to no edge counters.
 
         Note:
             Pin assignment ordering: Pins are assigned in the following order:
@@ -377,6 +389,14 @@ class EntanglerEEM(eem_mod._EEM):
             if i < num_entangler_inputs:
                 input_phys.append(phy.rtlink.i)
             target.rtio_channels.append(rtio.Channel.from_phy(phy))
+
+            if edge_counter_cls is not None:
+                state = getattr(phy, "input_state", None)
+                if state is not None:
+                    counter = edge_counter_cls(state)
+                    target.submodules += counter
+                    target.rtio_channels.append(rtio.Channel.from_phy(counter))
+
         _LOGGER.info(
             "RTIO Channels %i -> %i configured as Inputs (first %i entangle-able)",
             len(target.rtio_channels) - num_total_inputs,

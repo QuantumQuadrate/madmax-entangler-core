@@ -44,6 +44,10 @@
                             "interface_on_lower": {
                                 "type": "boolean",
                                 "default": true
+                            },
+                            "edge_counter": {
+                                "type": "boolean",
+                                "default": false
                             }
                         },
                         "required": [
