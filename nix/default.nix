@@ -17,7 +17,7 @@ let
 in
   python3Packages.buildPythonPackage rec {
     pname = "entangler";
-    version = "1.2.0.post0";
+    version = "1.3.0";
 
     src = lib.cleanSource entangler-src;
 
