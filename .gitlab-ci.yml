@@ -1,0 +1,15 @@
+include:
+  project: 'Duke-ARTIQ/ci-scripts'
+  file: '/envs.yml'
+
+stages:
+  - test
+
+test_nix:
+  extends: .nix_env
+  stage: test
+  variables:
+    NIX_SHELL_FILE: ""
+  script:
+    # Run build commands
+    - nix-build ./nix/default.nix --no-out-link

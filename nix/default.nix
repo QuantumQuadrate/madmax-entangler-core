@@ -24,6 +24,7 @@ in
     buildInputs = with python3Packages; [ pytestrunner ];
 
     propagatedBuildInputs = [
+      python3Packages.numpy
       artiqpkgs.artiq
       entangler-deps.dynaconf
     ] ++ lib.optionals buildGateware [
