@@ -34,6 +34,8 @@ in
       artiqpkgs.misoc
     ];
 
+    dontWrapQtApps = true;
+
     doCheck = buildGateware;  # all pytest tests are actually gateware tests, require migen
     checkInputs = [ python3Packages.pytestCheckHook ];
     pytestFlagsArray = [
