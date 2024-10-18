@@ -11,7 +11,6 @@ import typing
 
 import artiq.gateware.eem as eem_mod
 import artiq.gateware.rtio as rtio
-import artiq.gateware.targets.kasli_generic as kasligen
 import mergedeep
 from artiq import __version__ as _artiq_version_str
 from artiq.gateware.rtio.phy import ttl_serdes_7series
@@ -35,6 +34,12 @@ if _ARTIQ_MAJOR_VERSION >= 6:
     EDGE_COUNTER_CLS = edge_counter.SimpleEdgeCounter
 else:
     EDGE_COUNTER_CLS = None
+
+if _ARTIQ_MAJOR_VERSION >= 8:
+    import artiq.gateware.targets.kasli as kasligen
+else:
+    import artiq.gateware.targets.kasli_generic as kasligen
+
 
 
 def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
@@ -93,7 +98,7 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
 
 def _add_eem_to_artiq_build(artiq_version: int) -> None:
     """Patch the EEM into the ARTIQ Kasli build process"""
-    if artiq_version in {6, 7}:
+    if artiq_version >= 6:
         import artiq.coredevice.jsondesc as artiq_jsondesc
         import artiq.gateware.eem_7series as eem_7series
 
@@ -123,7 +128,7 @@ def _add_eem_to_artiq_build(artiq_version: int) -> None:
         )
 
 
-if _ARTIQ_MAJOR_VERSION in {6, 7}:
+if _ARTIQ_MAJOR_VERSION >= 6:
     _default_iostandard = eem_mod.default_iostandard
 else:
     _default_iostandard = "LVDS_25"  # ARTIQ 5
