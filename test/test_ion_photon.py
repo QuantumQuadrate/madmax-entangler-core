@@ -188,7 +188,7 @@ def test_phy_basic(request, ip_phy: PhyTestHarness):
             for i, seq in enumerate(core.sequencers):
                 yield from ip_phy.write(
                     ADDR_TIMING + i,
-                    (pump_timing_coarse[1] << 16) | pump_timing_coarse[0],
+                    (pump_timing_coarse[1] << 32) | pump_timing_coarse[0],
                 )
                 assert (yield seq.m_start) == pump_timing_coarse[0]
                 assert (yield seq.m_stop) == pump_timing_coarse[1]
@@ -203,7 +203,7 @@ def test_phy_basic(request, ip_phy: PhyTestHarness):
             for i, gater in enumerate(core.apd_gaters):
                 write_addr = ADDR_TIMING + num_sequencers + i
                 yield from ip_phy.write(
-                    write_addr, photon_valid_window[1] << 16 | photon_valid_window[0]
+                    write_addr, photon_valid_window[1] << 32 | photon_valid_window[0]
                 )
                 assert (yield gater.gate_start) == photon_valid_window[0]
                 assert (yield gater.gate_stop) == photon_valid_window[1]

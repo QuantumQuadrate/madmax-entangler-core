@@ -13,9 +13,9 @@ NUM_PATTERNS_ALLOWED = 4
 # These ones probably shouldn't need changed, but leaving it here just in case
 # Width of sequence duration counters and the coarse part of input timestamps
 # (units of clock cycles).
-COARSE_COUNTER_WIDTH = 11
+COARSE_COUNTER_WIDTH = 29
 # COUNTER_WIDTH + fine_timestamp_width = 11 + 3 = 14
 # Limited in various places to be <= 16 bits, probably don't do more than that.
-FULL_COUNTER_WIDTH = 14
-MAX_CYCLES_PER_RUN = 16383  # 14 bits
-MAX_TRIGGER_COUNTS = 16383  # 14 bits
+FULL_COUNTER_WIDTH = 32
+MAX_CYCLES_PER_RUN = 4294967296  # 32 bits
+MAX_TRIGGER_COUNTS = 4294967296  # 32 bits

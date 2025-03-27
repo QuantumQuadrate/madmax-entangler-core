@@ -321,8 +321,8 @@ class MainStateMachine(Module):
     def __init__(self, counter_width=settings.COARSE_COUNTER_WIDTH):
         """Define the state machine logic for running the input & output sequences."""
         self.m = Signal(counter_width)  # Global cycle-relative time.
-        self.time_remaining = Signal(32)  # Clock cycles remaining before timeout
-        self.timeout_input = Signal(32)
+        self.time_remaining = Signal(64)  # Clock cycles remaining before timeout
+        self.timeout_input = Signal(64)
         # How many iterations of the loop have completed since last start
         self.cycles_completed = Signal(max=settings.MAX_CYCLES_PER_RUN)
 

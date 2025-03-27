@@ -58,6 +58,7 @@ class Entangler(Module):
         """
         # width of fine & coarse timestamp/timer
         FULL_COUNTER_WIDTH = settings.FULL_COUNTER_WIDTH
+        COARSE_COUNTER_WIDTH = settings.COARSE_COUNTER_WIDTH
 
         # should eval to 14, but might change.
         PHY_DATA_INPUT_WIDTH = max(
@@ -82,7 +83,7 @@ class Entangler(Module):
 
         self.rtlink = rtlink.Interface(
             rtlink.OInterface(
-                data_width=32, address_width=timing_bit_width + 2, enable_replace=False
+                data_width=64, address_width=timing_bit_width + 2, enable_replace=False
             ),
             rtlink.IInterface(data_width=PHY_DATA_INPUT_WIDTH, timestamped=True),
         )
@@ -123,8 +124,8 @@ class Entangler(Module):
         cases = {}
         for i in range(len(output_t_starts)):
             cases[i] = [
-                output_t_starts[i].eq(self.rtlink.o.data[:16]),
-                output_t_ends[i].eq(self.rtlink.o.data[16:]),
+                output_t_starts[i].eq(self.rtlink.o.data[:32]),
+                output_t_ends[i].eq(self.rtlink.o.data[32:]),
             ]
 
         # Write timeout counter and start core running
@@ -154,7 +155,7 @@ class Entangler(Module):
                 (self.rtlink.o.address == ADDRESS_WRITE.TCYCLE)
                 & self.rtlink.o.stb,  # noqa: W503
                 # Write cycle length
-                self.core.msm.cycle_length_input.eq(self.rtlink.o.data[:10]),
+                self.core.msm.cycle_length_input.eq(self.rtlink.o.data[:COARSE_COUNTER_WIDTH]),
             ),
             If(
                 (self.rtlink.o.address == ADDRESS_WRITE.PATTERNS)
