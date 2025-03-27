@@ -21,8 +21,6 @@ buildPythonPackage rec {
 
   src = lib.cleanSource ./..;
 
-  buildInputs = [ pytestrunner ];
-
   propagatedBuildInputs = [
     numpy
     artiq

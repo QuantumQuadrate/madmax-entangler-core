@@ -5,7 +5,19 @@ include:
 stages:
   - test
 
-test_nix:
+build_nix:
+  extends: .nix_flake_env
+  stage: test
+  variables:
+    NIX_DEV_ENV: ""
+    UPDATE_FLAKE: 0
+  script:
+    # We actually do want to update, but the standard CI command doesn't account for non-top-level flakes
+    - nix flake update --access-tokens ${NIX_ACCESS_TOKENS} ./nix
+    # Run build commands
+    - nix build ./nix#entangler
+
+build_nix_legacy:
   extends: .nix_env
   stage: test
   variables:
