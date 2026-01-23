@@ -1,14 +1,11 @@
 {
-  description = "Entangler Core (ARTIQ gateware + Python support)";
+  description = "Entangler Core (ARTIQ extension)";
 
   inputs = {
-    # Use ARTIQ's nixpkgs to stay compatible with its Python/toolchain choices
-    artiqpkgs.url = "git+https://github.com/m-labs/artiq?ref=release-8";
-
-    # Keep nixpkgs aligned with ARTIQ
+    # Keep entangler aligned with ARTIQ's nixpkgs by default.
+    artiqpkgs.url = "git+https://github.com/QuantumQuadrate/madmax-artiq.git";
     nixpkgs.follows = "artiqpkgs/nixpkgs";
 
-    # Modern multi-system output helper
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -17,100 +14,87 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        # ARTIQ package set for the same system
         ap = artiqpkgs.packages.${system};
 
-        # ---- Build entangler from this repo's existing Nix entrypoint ----
+        # --- Critical bit: make entangler use the SAME python package set as ARTIQ if exposed ---
         #
-        # This assumes your entangler-core repo has a Nix entrypoint like:
-        #   ./default.nix   OR   ./nix/default.nix
-        #
-        # In the upstream tag v1.4.1, consumers typically use "?dir=nix",
-        # so most forks have `nix/default.nix`. Adjust `entanglerDefault`
-        # below if your file lives elsewhere.
-        entanglerDefault =
-          if builtins.pathExists ./nix/default.nix then ./nix/default.nix
-          else if builtins.pathExists ./default.nix then ./default.nix
-          else throw "Could not find ./nix/default.nix or ./default.nix in entangler-core repo.";
+        # Depending on how the ARTIQ flake is structured, ap may or may not expose python3Packages.
+        # When it does, using that avoids the Python 3.12 vs 3.13 mismatch you hit.
+        pythonPkgs =
+          if ap ? python3Packages then ap.python3Packages
+          else pkgs.python3Packages;
 
-        # Build the Python package. If your `default.nix` supports `buildGateware`,
-        # you can toggle it here. Most people want it on for full functionality.
-        entangler = pkgs.python3Packages.callPackage entanglerDefault {
-          buildGateware = true;
-          # If your default.nix wants ARTIQ deps explicitly, uncomment:
-          # inherit (ap) artiq migen misoc;
+        python = pythonPkgs.python;
+
+        entangler-deps = pkgs.callPackage ./entangler-dependencies.nix {
+          python3Packages = pythonPkgs;
         };
 
-        # ---- Optional: a Vivado wrapper shell env (keeps your system clean) ----
-        #
-        # This matches the “FHS Vivado” idea you showed. It assumes Vivado
-        # is installed at /opt/Xilinx/Vivado/<version>.
-        vivadoVersion = "2022.2";
-        filterfunc = drv:
-          !((pkgs.lib.strings.hasPrefix "python3" drv.name)
-            || drv.name == "vivado"
-            || drv.name == "vivado-env");
+        mkEntangler = buildGateware:
+          pythonPkgs.callPackage ./derivation.nix {
+            inherit (pkgs) lib;
 
-        vivadoDeps = pkgs': with pkgs'; let
-          # Fix ncurses5 libtinfo soname issues (common for Vivado)
-          ncurses' = ncurses5.overrideAttrs (old: {
-            configureFlags = (old.configureFlags or []) ++ [ "--with-termlib" ];
-            postFixup = "";
-          });
-        in [
-          libxcrypt-legacy
-          (ncurses'.override { unicodeSupport = false; })
-          zlib
-          libuuid
-          xorg.libSM
-          xorg.libICE
-          xorg.libXrender
-          xorg.libX11
-          xorg.libXext
-          xorg.libXtst
-          xorg.libXi
-          freetype
-          fontconfig
-        ];
+            # Pull ARTIQ + (optional) gateware deps from the ARTIQ package set.
+            inherit (ap) artiq;
+            migen = ap.migen or null;
+            misoc = ap.misoc or null;
 
-        vivado = pkgs.buildFHSUserEnv {
-          name = "vivado";
-          targetPkgs = vivadoDeps;
-          profile = "set -e; source /opt/Xilinx/Vivado/${vivadoVersion}/settings64.sh";
-          runScript = "vivado";
-        };
+            inherit (entangler-deps) dynaconf;
 
-        pythonWithEntangler = pkgs.python3.withPackages (ps: [
+            inherit buildGateware;
+
+            # Gateware-only python deps
+            jsonschema = pythonPkgs.jsonschema;
+            mergedeep = pythonPkgs.mergedeep;
+
+            # Tests
+            pytestCheckHook = pythonPkgs.pytestCheckHook;
+
+            # Unused in your derivation but sometimes needed by buildPythonPackage callers:
+            pytestrunner = pythonPkgs.pytestrunner or null;
+            numpy = pythonPkgs.numpy;
+          };
+
+        entangler = mkEntangler true;
+        entangler-no-gateware = mkEntangler false;
+
+        # A python interpreter that can `import entangler`
+        pythonWithEntangler = python.withPackages (_ps: [
           entangler
-          # handy sanity-check tools (optional)
-          ps.packaging
-          ps.jsonschema
+        ]);
+
+        pythonWithEntanglerNoGateware = python.withPackages (_ps: [
+          entangler-no-gateware
         ]);
       in
-      rec {
+      {
         packages = {
-          entangler = entangler;
-          default = pythonWithEntangler;
+          inherit entangler entangler-no-gateware;
+          default = entangler;
         };
 
         devShells = {
-          # Simple “python import entangler” shell
+          # Fast “python import entangler” shell (no Vivado requirement)
           default = pkgs.mkShell {
             name = "entangler-core-dev-shell";
             buildInputs = [
-              pythonWithEntangler
+              pythonWithEntanglerNoGateware
             ];
           };
 
-          # If you want a Vivado-enabled dev shell (for gateware work)
-          vivado = ap.devShells.${system}.boards.overrideAttrs (oa: {
-            buildInputs =
-              (builtins.filter filterfunc oa.buildInputs)
-              ++ [
-                pythonWithEntangler
-                vivado
-              ];
-          });
+          # Gateware-capable shell (pulls in extra deps; Vivado is still your system install)
+          gateware = pkgs.mkShell {
+            name = "entangler-core-gateware-shell";
+            buildInputs = [
+              pythonWithEntangler
+            ];
+            shellHook = ''
+              # If you have Vivado installed system-wide, this makes it available automatically.
+              if [ -f /opt/Xilinx/Vivado/2022.2/settings64.sh ]; then
+                source /opt/Xilinx/Vivado/2022.2/settings64.sh
+              fi
+            '';
+          };
         };
 
         formatter = pkgs.nixpkgs-fmt;
@@ -118,13 +102,16 @@
     );
 
   nixConfig = {
-    # If you rely on M-Labs cache, keep these (optional)
     extra-trusted-public-keys = [
       "nixbld.m-labs.hk-1:5aSRVA5b320xbNvu30tqxVPXpld73bhtOeH6uAjRyHc="
     ];
-    extra-substituters = [ "https://nixbld.m-labs.hk" ];
+    extra-substituters = [
+      "https://nixbld.m-labs.hk"
+    ];
 
-    # If Vivado is installed in /opt and you want Nix builds/shells to see it
-    extra-sandbox-paths = "/opt";
+    # If you rely on Vivado living in /opt inside sandboxed builds/shells
+    extra-sandbox-paths = [
+      "/opt"
+    ];
   };
 }
