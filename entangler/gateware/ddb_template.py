@@ -80,12 +80,12 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
 
 
 if __name__ == "__main__":
-    import dax_gateware.jsondesc
+    import gateware.jsondesc
 
     # Inject custom peripheral manager class
     artiq.frontend.artiq_ddb_template.PeripheralManager = PeripheralManager
     # Inject custom peripherals in JSON schema
-    dax_gateware.jsondesc.inject()
+    gateware.jsondesc.inject()
 
     # Run regular main function
     artiq.frontend.artiq_ddb_template.main()

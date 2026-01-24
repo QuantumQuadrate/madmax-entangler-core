@@ -6,7 +6,7 @@ import argparse
 
 import artiq.coredevice.jsondesc
 
-import dax_gateware.jsondesc
+import gateware.jsondesc
 
 
 def main():
@@ -16,7 +16,7 @@ def main():
     args = parser.parse_args()
 
     # Inject custom peripherals in JSON schema
-    dax_gateware.jsondesc.inject()
+    gateware.jsondesc.inject()
 
     for f in args.files:
         # Validate JSON file
