@@ -2,7 +2,6 @@
   description = "Entangler Core (ARTIQ extension) - single-file modern flake";
 
   inputs = {
-    # Use the same nixpkgs as ARTIQ to stay consistent with its Python/toolchain
     artiqpkgs.url = "git+https://github.com/QuantumQuadrate/madmax-artiq.git";
     nixpkgs.follows = "artiqpkgs/nixpkgs";
 
@@ -15,10 +14,9 @@
         pkgs = import nixpkgs { inherit system; };
         ap = artiqpkgs.packages.${system};
 
-        # Prefer ARTIQ's Python package set if exposed (prevents 3.12 vs 3.13 mismatches)
+        # Prefer ARTIQ's python set when available (avoids python version mismatches)
         pythonPkgs =
-          if ap ? python3Packages then ap.python3Packages
-          else pkgs.python3Packages;
+          if ap ? python3Packages then ap.python3Packages else pkgs.python3Packages;
 
         python = pythonPkgs.python;
 
@@ -31,11 +29,10 @@
 
           src = pythonPkgs.fetchPypi {
             inherit pname version;
-            # From your snippet; modern nix uses `hash` (sha256 works too on many nixpkgs)
-            hash = "sha256-dMwYlzljgLuVdzDrNBzAl27pw4u8tTPTMHxQyu0K3vk=";
+            # Correct hash from your log ("got:")
+            hash = "sha256-dMwYlzljgLuVdzDrNBzAl27pw4u8tT0zB8UMrtCu37g=";
           };
 
-          # Works on current nixpkgs Python builders
           pyproject = true;
           build-system = [ pythonPkgs.setuptools ];
 
@@ -58,43 +55,36 @@
         # -------------------------
         # entangler (inline)
         # -------------------------
-        #
-        # This repo layout (per your output) has:
-        #   ./entangler/__init__.py
-        #   ./entangler/core.py
-        #   ...
-        #
-        # So we "install" by copying the `entangler/` directory into site-packages.
-        #
         mkEntangler = { buildGateware ? false }:
           pythonPkgs.buildPythonPackage rec {
             pname = "entangler";
             version = self.sourceInfo.rev or "unstable";
-
             src = self;
 
-            # There may be no setup.py/pyproject; we do a manual install.
+            # This repo doesn't necessarily have setup.py/pyproject; we install by copying.
             format = "other";
-
             dontBuild = true;
             doCheck = false;
 
-            # Runtime deps that entangler actually imports
+            # Fix: entangler is NOT a Qt application; disable Qt wrapping if Qt sneaks in.
+            dontWrapQtApps = true;
+
             propagatedBuildInputs =
               [
                 dynaconf
               ]
-              # Gateware functionality dependencies (only when requested)
-              ++ pkgs.lib.optionals buildGateware (with pythonPkgs; [
-                jsonschema
-                mergedeep
-                numpy
-              ] ++ (with ap; [
-                # These come from ARTIQ pkgs, keep them aligned with ARTIQ
-                migen
-                misoc
-                artiq
-              ]));
+              ++ pkgs.lib.optionals buildGateware (
+                (with pythonPkgs; [
+                  jsonschema
+                  mergedeep
+                  numpy
+                ])
+                ++ (with ap; [
+                  migen
+                  misoc
+                  artiq
+                ])
+              );
 
             installPhase = ''
               runHook preInstall
@@ -122,36 +112,38 @@
         };
 
         devShells = {
-          # Fast “import entangler” shell (no Vivado/gateware deps)
-          default = pkgs.mkShell {
-            name = "entangler-core-dev-shell";
-            buildInputs = [
-              pythonWithEntanglerNoGateware
-            ];
-          };
-
-          # Gateware-capable shell (adds deps + auto-sources Vivado if you have it installed)
-          gateware = pkgs.mkShell {
+        # DEFAULT: gateware-capable shell
+        default = pkgs.mkShell {
             name = "entangler-core-gateware-shell";
+
             buildInputs = [
-              pythonWithEntanglerGateware
+            pythonWithEntanglerGateware
             ];
 
             shellHook = ''
-              if [ -f /opt/Xilinx/Vivado/2022.2/settings64.sh ]; then
+            if [ -f /opt/Xilinx/Vivado/2022.2/settings64.sh ]; then
                 # shellcheck disable=SC1091
                 source /opt/Xilinx/Vivado/2022.2/settings64.sh
-              else
+            else
                 echo "NOTE: Vivado 2022.2 not found at /opt/Xilinx/Vivado/2022.2/settings64.sh"
-              fi
+            fi
             '';
-          };
+        };
+
+        # Optional: lightweight shell (no Vivado, faster startup)
+        lite = pkgs.mkShell {
+            name = "entangler-core-lite-shell";
+            buildInputs = [
+            pythonWithEntanglerNoGateware
+            ];
+        };
         };
 
         formatter = pkgs.nixpkgs-fmt;
       }
     );
 
+  # These are nice-to-have but will be ignored if you aren't a trusted user.
   nixConfig = {
     extra-trusted-public-keys = [
       "nixbld.m-labs.hk-1:5aSRVA5b320xbNvu30tqxVPXpld73bhtOeH6uAjRyHc="
@@ -159,8 +151,6 @@
     extra-substituters = [
       "https://nixbld.m-labs.hk"
     ];
-
-    # If you rely on Vivado living in /opt inside sandboxed shells/builds
     extra-sandbox-paths = [
       "/opt"
     ];
