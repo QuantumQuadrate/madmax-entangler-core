@@ -42,7 +42,7 @@ else:
 
 
 
-def peripheral_entangler(module, peripheral: typing.Dict[str, list]):
+def peripheral_entangler(module, peripheral: typing.Dict[str, list], **kwargs):
     """Add an Ion-Photon entangling gateware device to an ARTIQ SoC.
 
     Expected format:
