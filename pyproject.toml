@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "entangler"
+version = "0.1.0"
+description = "Entangler core and ARTIQ integration"
+readme = "README.md"
+requires-python = ">=3.9"
+
+authors = [
+  { name = "Quantum Quadrate / MadMax" }
+]
+
+dependencies = [
+  # ARTIQ is *not* a runtime dependency here, only used during gateware build,
+  # so we intentionally do NOT depend on artiq.
+]
+
+[tool.setuptools]
+packages = ["entangler"]
+
+[tool.setuptools.package-data]
+entangler = ["*.json"]
