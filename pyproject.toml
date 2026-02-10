@@ -22,4 +22,4 @@ dependencies = [
 packages = ["entangler"]
 
 [tool.setuptools.package-data]
-entangler = ["*.json"]
+entangler = ["*.json", "*.toml"]
