@@ -21,7 +21,7 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
         link_eem = peripheral.get("link_eem", None)
         interface_on_lower = peripheral.get("interface_on_lower", True)
 
-        assert len(ports) == 2, 'Currently, only two ports is supported for DDB generation'
+        assert len(ports) >= 1, 'At least one DIO port is required for DDB generation'
         assert not uses_reference, 'Currently, reference input is not supported for DDB generation'
         assert link_eem is None, 'Currently, link eem is not supported in DDB generation'
         assert interface_on_lower, 'Currently, only interface on lower enabled is supported for DDB generation'

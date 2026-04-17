@@ -25,6 +25,37 @@ There are also tests in a separate directory, which can be run with ``pytest -m 
 
 See the [README](./entangler/README.md) for complete information.
 
+## 2-Input / 2-Output Kasli DIO Setup
+
+For the DIO TTL EEM wiring used in this repository, the DIO bank is treated as a
+fixed split:
+
+- ``dioX[0]`` through ``dioX[3]`` are input pads
+- ``dioX[4]`` through ``dioX[7]`` are output pads
+
+The Kasli builder now allocates entangler and generic inputs only from the lower
+half of each DIO bank, and allocates entangler outputs only from the upper half.
+This avoids assigning output PHYs onto detector pins.
+
+For a simple single-card setup with two detector inputs and two entangler outputs:
+
+- set ``NUM_ENTANGLER_INPUT_SIGNALS = 2``
+- set ``NUM_OUTPUT_CHANNELS = 2``
+- set ``NUM_GENERIC_INPUT_SIGNALS = 0``
+- set ``"uses_reference": false`` in the Kasli JSON
+- set ``"running_output": false`` in the Kasli JSON
+- use a single DIO EEM in ``"ports"``
+
+With that configuration, the expected physical mapping is:
+
+- ``input 0 -> dioX[0]``
+- ``input 1 -> dioX[1]``
+- ``output 0 -> dioX[4]``
+- ``output 1 -> dioX[5]``
+
+RTIO channel numbering is still unchanged at the driver level: outputs come first,
+then inputs, then the entangler core channel.
+
 ## Authors
 
 Originally designed by the Oxford Ion Trap Group (@cjbe & @dnadlinger), extended/modified

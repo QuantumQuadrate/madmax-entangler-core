@@ -27,6 +27,9 @@ from entangler.config import settings as entangler_settings
 _LOGGER = logging.getLogger(__name__)
 # packaging.version.parse() preferred, but the ARTIQ version is not PEP440 compliant
 _ARTIQ_MAJOR_VERSION = int(_artiq_version_str.split(".")[0])
+# DIO TTL EEM wiring is fixed: lower pins are detector inputs, upper pins are outputs.
+DIO_INPUT_INDICES = (0, 1, 2, 3)
+DIO_OUTPUT_INDICES = (4, 5, 6, 7)
 
 if _ARTIQ_MAJOR_VERSION >= 6:
     from artiq.gateware.rtio.phy import edge_counter
@@ -278,15 +281,13 @@ class EntanglerEEM(eem_mod._EEM):
                 Defaults to no edge counters.
 
         Note:
-            Pin assignment ordering: Pins are assigned in the following order:
-            Outputs,
-            (optional out: entangler_is_running?, if set in JSON & settings.toml),
-            Entangler Inputs (pattern-matching inputs then optional reference input),
-            Generic Inputs (other InOuts, not included in pattern-matching).
-            We first try to fill up the eem_dio pads, then the eem_interface pads.
-            This means that the Input pins could be assigned to the same EEM
-            as the inter-Kasli Entangler communication.
-            If that's not desired, feel free to rewrite it yourself.
+            Physical DIO routing follows a fixed split on each EEM bank:
+            ``dio[*][0:4]`` are treated as inputs and ``dio[*][4:8]`` as outputs.
+            Entangler/general inputs (and the optional reference input) are reserved
+            from the input pool, while entangler outputs (and the optional running
+            output) are reserved from the output pool. RTIO channels are still
+            created in the traditional order of outputs first and inputs second so
+            the existing driver/DDB channel numbering remains unchanged.
 
             Built liberally off Oxford's draft EEM code, though greatly extended.
         """
@@ -316,84 +317,194 @@ class EntanglerEEM(eem_mod._EEM):
             num_entangler_inputs += 1
         num_running_outputs = 1 if running_output else 0
         num_if_pins = 5 if uses_reference else 4
+        needed_inputs = num_total_inputs + (1 if uses_reference else 0)
+        needed_outputs = num_outputs + num_running_outputs
 
-        # Wanted to do this with itertools, but didn't know how. So this is quick
-        # Chains eem_dio pins, then eem_interface's DIO pins (if exist).
-        # Forces outputs,inputs to go to DIO EEM (ports in JSON) first, then interface
-        all_dio_pins = []
-        for eem in eem_dio:
-            all_dio_pins.extend(
-                (target.platform.request("dio{}".format(eem), i) for i in range(8))
+        def _pad_label(eem: int, physical_index: int) -> str:
+            return "dio{}[{}]".format(eem, physical_index)
+
+        def _request_pad(
+                eem: int, resource_index: int, physical_index: int
+        ) -> typing.Tuple[typing.Any, int, int]:
+            return (
+                target.platform.request("dio{}".format(eem), resource_index),
+                eem,
+                physical_index,
             )
+
+        input_pad_pool = []
+        output_pad_pool = []
+        for eem in eem_dio:
+            input_pad_pool.extend(
+                _request_pad(eem, i, i) for i in DIO_INPUT_INDICES
+            )
+            output_pad_pool.extend(
+                _request_pad(eem, i, i) for i in DIO_OUTPUT_INDICES
+            )
+
         if eem_interface is not None:
+            if uses_reference:
+                interface_dio_map = list(enumerate(range(num_if_pins, 8)))
+            elif interface_on_lower:
+                interface_dio_map = list(enumerate(DIO_OUTPUT_INDICES))
+            else:
+                interface_dio_map = list(enumerate(DIO_INPUT_INDICES))
+
+            added_interface_inputs = 0
+            added_interface_outputs = 0
             try:
-                for i in range(8):
-                    all_dio_pins.append(
-                        target.platform.request("dio{}".format(eem_interface), i)
+                for resource_index, physical_index in interface_dio_map:
+                    pad_entry = _request_pad(
+                        eem_interface, resource_index, physical_index
                     )
+                    if physical_index in DIO_INPUT_INDICES:
+                        input_pad_pool.append(pad_entry)
+                        added_interface_inputs += 1
+                    else:
+                        output_pad_pool.append(pad_entry)
+                        added_interface_outputs += 1
             except ConstraintError:
                 _LOGGER.debug(
-                    "Added %i DIO pins from EEM_interface %i (expected %i)",
-                    i,
+                    "Added %i input pads and %i output pads from EEM_interface %i",
+                    added_interface_inputs,
+                    added_interface_outputs,
                     eem_interface,
-                    8 - num_if_pins,
                 )
-        dio_pins_iter = iter(all_dio_pins)
-        _LOGGER.debug(
-            "Total of %i DIO pins are available for Input/Output", len(all_dio_pins)
+            else:
+                _LOGGER.debug(
+                    "Added %i input pads and %i output pads from EEM_interface %i",
+                    added_interface_inputs,
+                    added_interface_outputs,
+                    eem_interface,
+                )
+
+        _LOGGER.info(
+            "Found %i input pads and %i output pads for Entangler allocation",
+            len(input_pad_pool),
+            len(output_pad_pool),
         )
-        if num_total_inputs + num_outputs + num_running_outputs > len(all_dio_pins):
+        _LOGGER.debug(
+            "Input pad pool: %s",
+            ", ".join(_pad_label(eem, i) for _, eem, i in input_pad_pool)
+            or "<none>",
+        )
+        _LOGGER.debug(
+            "Output pad pool: %s",
+            ", ".join(_pad_label(eem, i) for _, eem, i in output_pad_pool)
+            or "<none>",
+        )
+        if needed_inputs > len(input_pad_pool):
             _LOGGER.error(
-                "Trying to allocate more I/O pins (%i) than provided (%i)",
-                num_total_inputs + num_outputs + num_running_outputs,
-                len(all_dio_pins),
+                "Trying to allocate more input pins (%i) than provided (%i)",
+                needed_inputs,
+                len(input_pad_pool),
             )
-        else:
+        if needed_outputs > len(output_pad_pool):
+            _LOGGER.error(
+                "Trying to allocate more output pins (%i) than provided (%i)",
+                needed_outputs,
+                len(output_pad_pool),
+            )
+        if needed_inputs > len(input_pad_pool) or needed_outputs > len(output_pad_pool):
+            raise ValueError("Insufficient DIO pads for requested Entangler I/O")
+
+        _LOGGER.debug(
+            "Num Outputs: %d, Num Inputs: %d (%d entangler), # Input Pads: %d, # Output Pads: %d",
+            num_outputs,
+            num_total_inputs,
+            num_entangler_inputs,
+            len(input_pad_pool),
+            len(output_pad_pool),
+        )
+        input_pads_iter = iter(input_pad_pool)
+        output_pads_iter = iter(output_pad_pool)
+
+        allocated_input_pads = [next(input_pads_iter) for _ in range(num_total_inputs)]
+        reference_pad = next(input_pads_iter) if uses_reference else None
+        allocated_output_pads = [
+            next(output_pads_iter) for _ in range(num_outputs)
+        ]
+        running_output_pad = next(output_pads_iter) if running_output else None
+
+        # Reserve input pads from the detector side first, then assign outputs from
+        # the output-side pool while keeping legacy RTIO channel numbering unchanged.
+        _LOGGER.debug(
+            "Allocated input pads: %s",
+            ", ".join(_pad_label(eem, i) for _, eem, i in allocated_input_pads)
+            or "<none>",
+        )
+        if reference_pad is not None:
             _LOGGER.debug(
-                "Num Outputs: %d, Num Inputs: %d (%d entangler), # DIO Pins: %d",
-                num_outputs,
-                num_total_inputs,
-                num_entangler_inputs,
-                len(all_dio_pins),
+                "Allocated reference pad: %s",
+                _pad_label(reference_pad[1], reference_pad[2]),
+            )
+        _LOGGER.debug(
+            "Allocated output pads: %s",
+            ", ".join(_pad_label(eem, i) for _, eem, i in allocated_output_pads)
+            or "<none>",
+        )
+        if running_output_pad is not None:
+            _LOGGER.debug(
+                "Allocated running-output pad: %s",
+                _pad_label(running_output_pad[1], running_output_pad[2]),
             )
 
         # *** Create PHYs for outputs then inputs (then reference, opt) ***
         output_pads = []
         output_sigs = [Signal() for _ in range(num_outputs)]
         # Assign Entangler outputs to pads, create PHYs
-        for i in range(num_outputs):
-            pads = next(dio_pins_iter)
+        output_rtio_channels = []
+        for i, (pads, eem, physical_index) in enumerate(allocated_output_pads):
             output_pads.append(pads)
             phy = io_class["output"](output_sigs[i])
             target.submodules += phy
             target.rtio_channels.append(rtio.Channel.from_phy(phy))
-        _LOGGER.info(
-            "RTIO Channels %i -> %i configured as Outputs",
-            len(target.rtio_channels) - num_outputs,
-            len(target.rtio_channels) - 1,
-        )
-        if running_output:
+            output_rtio_channels.append(len(target.rtio_channels) - 1)
+            _LOGGER.debug(
+                "Assigned Output[%i] to %s on RTIO channel %i",
+                i,
+                _pad_label(eem, physical_index),
+                output_rtio_channels[-1],
+            )
+        if output_rtio_channels:
+            _LOGGER.info(
+                "RTIO Channels %i -> %i configured as Outputs",
+                output_rtio_channels[0],
+                output_rtio_channels[-1],
+            )
+        if running_output_pad is not None:
             # processing will be taken care of in EntanglerCore
-            pads = next(dio_pins_iter)
+            pads, eem, physical_index = running_output_pad
             output_pads.append(pads)
             _LOGGER.info(
-                "Assigned running output to %s-%d",
-                pads.name,
-                (len(output_pads) - 1) % 8,
+                "Assigned running output to %s",
+                _pad_label(eem, physical_index),
             )
 
         # Create specified # of inputs, add them to list for Entangler creation.
         input_phys = []
-        for i in range(num_total_inputs):
-            pads = next(dio_pins_iter)
-            if int(pads.name.lstrip("dio")) == eem_interface:
-                _LOGGER.info("Assigning Input[%i] to Interface Board", i)
+        input_rtio_channels = []
+        edge_counter_channels = []
+        for i, (pads, eem, physical_index) in enumerate(allocated_input_pads):
+            if eem == eem_interface:
+                _LOGGER.info(
+                    "Assigning Input[%i] to Interface Board (%s)",
+                    i,
+                    _pad_label(eem, physical_index),
+                )
             phy = io_class["input"](pads.p, pads.n)
             target.submodules += phy
             # only add num_entangler_inputs -> input_phys -> Entanglercore
             if i < num_entangler_inputs:
                 input_phys.append(phy.rtlink.i)
             target.rtio_channels.append(rtio.Channel.from_phy(phy))
+            input_rtio_channels.append(len(target.rtio_channels) - 1)
+            _LOGGER.debug(
+                "Assigned Input[%i] to %s on RTIO channel %i",
+                i,
+                _pad_label(eem, physical_index),
+                input_rtio_channels[-1],
+            )
 
             if edge_counter_cls is not None:
                 state = getattr(phy, "input_state", None)
@@ -401,17 +512,25 @@ class EntanglerEEM(eem_mod._EEM):
                     counter = edge_counter_cls(state)
                     target.submodules += counter
                     target.rtio_channels.append(rtio.Channel.from_phy(counter))
+                    edge_counter_channels.append(len(target.rtio_channels) - 1)
 
-        _LOGGER.info(
-            "RTIO Channels %i -> %i configured as Inputs (first %i entangle-able)",
-            len(target.rtio_channels) - num_total_inputs,
-            len(target.rtio_channels) - 1,
-            num_entangler_inputs,
-        )
+        if input_rtio_channels:
+            _LOGGER.info(
+                "RTIO Channels %i -> %i configured as Inputs (first %i entangle-able)",
+                input_rtio_channels[0],
+                input_rtio_channels[-1],
+                num_entangler_inputs,
+            )
+        if edge_counter_channels:
+            _LOGGER.info(
+                "RTIO Channels %i -> %i configured as input edge counters",
+                edge_counter_channels[0],
+                edge_counter_channels[-1],
+            )
 
         # add reference PHY
-        if uses_reference:
-            pads = next(dio_pins_iter)
+        if reference_pad is not None:
+            pads, eem, physical_index = reference_pad
             phy = io_class["input"](pads.p, pads.n)
             target.submodules += phy
             reference_phy = phy
@@ -419,7 +538,7 @@ class EntanglerEEM(eem_mod._EEM):
             _LOGGER.info(
                 "Adding reference PHY as input on RTIO channel %i (%s)",
                 len(target.rtio_channels) - 1,
-                pads,
+                _pad_label(eem, physical_index),
             )
         else:
             reference_phy = None
@@ -445,15 +564,22 @@ class EntanglerEEM(eem_mod._EEM):
         target.rtio_channels.append(rtio.Channel.from_phy(phy))
         _LOGGER.info("Added Entangler PHY on channel %i", len(target.rtio_channels) - 1)
 
-        # allocate the leftover pins to DIO output. Could maybe change to InOut?
-        for pad in dio_pins_iter:
+        unused_input_pads = list(input_pads_iter)
+        if unused_input_pads:
+            _LOGGER.debug(
+                "Leaving %i unused input pads unallocated: %s",
+                len(unused_input_pads),
+                ", ".join(_pad_label(eem, i) for _, eem, i in unused_input_pads),
+            )
+
+        # Allocate any remaining output-capable pads to DIO output.
+        for pad, eem, physical_index in output_pads_iter:
             phy = io_class["output"](pad.p, pad.n)
             target.submodules += phy
             target.rtio_channels.append(rtio.Channel.from_phy(phy))
             _LOGGER.debug(
-                "Added output %s to Entangler DIO (either interface or port "
-                "if In + Out < len(ports) * 8)",
-                pad.name,
+                "Added spare output %s to Entangler DIO",
+                _pad_label(eem, physical_index),
             )
 
 

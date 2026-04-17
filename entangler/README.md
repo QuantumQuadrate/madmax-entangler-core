@@ -40,6 +40,61 @@ See below for more example code
 
 ## Pin Configuration Notes
 
+### DIO TTL EEM Wiring
+
+The DIO TTL EEM wiring assumed by the Kasli builder is a fixed split on each
+8-channel DIO bank:
+
+- ``dioX[0]`` through ``dioX[3]`` are treated as input pads
+- ``dioX[4]`` through ``dioX[7]`` are treated as output pads
+
+The gateware builder allocates pads from separate pools:
+
+- entangler inputs and generic inputs are taken from the input-pad pool
+- the optional reference input is also taken from the input-pad pool
+- entangler outputs are taken from the output-pad pool
+- the optional ``running_output`` is also taken from the output-pad pool
+
+This preserves the existing RTIO channel numbering seen by the driver and device
+database helpers: outputs are still numbered first, followed by inputs, followed
+by the entangler PHY channel.
+
+### 2-Input / 2-Output Configuration
+
+For a single-card setup with two detector inputs and two output reaction channels,
+set the compile-time entangler settings to:
+
+```toml
+NUM_OUTPUT_CHANNELS = 2
+NUM_ENTANGLER_INPUT_SIGNALS = 2
+NUM_GENERIC_INPUT_SIGNALS = 0
+```
+
+In the Kasli description JSON, use one DIO card in ``"ports"`` and keep:
+
+```json
+{
+  "uses_reference": false,
+  "running_output": false
+}
+```
+
+With a single DIO EEM ``X``, the resulting physical mapping is:
+
+- ``entangler input 0 -> dioX[0]``
+- ``entangler input 1 -> dioX[1]``
+- ``entangler output 0 -> dioX[4]``
+- ``entangler output 1 -> dioX[5]``
+
+That matches the common ``SPCM0``, ``SPCM1`` detector use case without consuming
+any extra generic inputs.
+
+If generic inputs are needed later, increase
+``NUM_GENERIC_INPUT_SIGNALS`` and they will continue allocating from the same
+input-pad pool after the entangler inputs. Likewise, enabling ``uses_reference``
+or ``running_output`` consumes one additional input-side or output-side pad,
+respectively.
+
 ### Master Entangler -> Slave Entangler Communication
 
 5 pins (Oxford) or 4 pins (UMD) are used for Master <-> Slave entangler communication. These must be connected
