@@ -23,13 +23,13 @@ from migen.build.generic_platform import Subsignal
 
 import entangler.phy
 from entangler.config import settings as entangler_settings
+from entangler.gateware.io_mapping import DIO_INPUT_INDICES
+from entangler.gateware.io_mapping import DIO_OUTPUT_INDICES
+from entangler.gateware.io_mapping import PhysicalTtlChannel
 
 _LOGGER = logging.getLogger(__name__)
 # packaging.version.parse() preferred, but the ARTIQ version is not PEP440 compliant
 _ARTIQ_MAJOR_VERSION = int(_artiq_version_str.split(".")[0])
-# DIO TTL EEM wiring is fixed: lower pins are detector inputs, upper pins are outputs.
-DIO_INPUT_INDICES = (0, 1, 2, 3)
-DIO_OUTPUT_INDICES = (4, 5, 6, 7)
 
 if _ARTIQ_MAJOR_VERSION >= 6:
     from artiq.gateware.rtio.phy import edge_counter
@@ -323,6 +323,26 @@ class EntanglerEEM(eem_mod._EEM):
         def _pad_label(eem: int, physical_index: int) -> str:
             return "dio{}[{}]".format(eem, physical_index)
 
+        port_positions = {eem: port_index for port_index, eem in enumerate(eem_dio)}
+
+        def _physical_ttl_channel(
+                eem: int, physical_index: int, direction: str
+        ) -> typing.Optional[PhysicalTtlChannel]:
+            if eem not in port_positions:
+                return None
+            return PhysicalTtlChannel(
+                port_index=port_positions[eem],
+                eem_port=eem,
+                physical_index=physical_index,
+                direction=direction,
+            )
+
+        def _exported_name(eem: int, physical_index: int, direction: str) -> str:
+            physical_ttl = _physical_ttl_channel(eem, physical_index, direction)
+            if physical_ttl is None:
+                return "<not exported by standalone DDB>"
+            return physical_ttl.exported_name
+
         def _request_pad(
                 eem: int, resource_index: int, physical_index: int
         ) -> typing.Tuple[typing.Any, int, int]:
@@ -460,11 +480,19 @@ class EntanglerEEM(eem_mod._EEM):
             target.submodules += phy
             target.rtio_channels.append(rtio.Channel.from_phy(phy))
             output_rtio_channels.append(len(target.rtio_channels) - 1)
+            exported_name = _exported_name(eem, physical_index, "output")
             _LOGGER.debug(
                 "Assigned Output[%i] to %s on RTIO channel %i",
                 i,
                 _pad_label(eem, physical_index),
                 output_rtio_channels[-1],
+            )
+            _LOGGER.info(
+                "Entangler output[%i]: %s -> RTIO channel %i -> exported as %s",
+                i,
+                _pad_label(eem, physical_index),
+                output_rtio_channels[-1],
+                exported_name,
             )
         if output_rtio_channels:
             _LOGGER.info(
@@ -499,11 +527,19 @@ class EntanglerEEM(eem_mod._EEM):
                 input_phys.append(phy.rtlink.i)
             target.rtio_channels.append(rtio.Channel.from_phy(phy))
             input_rtio_channels.append(len(target.rtio_channels) - 1)
+            exported_name = _exported_name(eem, physical_index, "input")
             _LOGGER.debug(
                 "Assigned Input[%i] to %s on RTIO channel %i",
                 i,
                 _pad_label(eem, physical_index),
                 input_rtio_channels[-1],
+            )
+            _LOGGER.info(
+                "Entangler input[%i]: %s -> RTIO channel %i -> exported as %s",
+                i,
+                _pad_label(eem, physical_index),
+                input_rtio_channels[-1],
+                exported_name,
             )
 
             if edge_counter_cls is not None:
@@ -513,6 +549,13 @@ class EntanglerEEM(eem_mod._EEM):
                     target.submodules += counter
                     target.rtio_channels.append(rtio.Channel.from_phy(counter))
                     edge_counter_channels.append(len(target.rtio_channels) - 1)
+                    _LOGGER.info(
+                        "Entangler input[%i] counter: %s -> RTIO channel %i -> exported as %s_counter",
+                        i,
+                        _pad_label(eem, physical_index),
+                        edge_counter_channels[-1],
+                        exported_name,
+                    )
 
         if input_rtio_channels:
             _LOGGER.info(

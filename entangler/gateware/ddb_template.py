@@ -2,13 +2,16 @@
 
 """An extension of the ARTIQ device DB template script."""
 
-from itertools import count
-
 import artiq.frontend.artiq_ddb_template
+from entangler.gateware.io_mapping import build_standalone_ttl_exports
 
 
 class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
     """An extension of the ARTIQ device DB template peripheral manager that includes custom peripheral types."""
+
+    def _reserve_explicit_name(self, ty, index):
+        self.counts[ty] = max(self.counts[ty], index + 1)
+        return "{}{}".format(ty, index)
 
     def process_entangler(self, rtio_offset, peripheral):
         from entangler.config import settings
@@ -20,48 +23,66 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
         running_output = peripheral.get("running_output", False)
         link_eem = peripheral.get("link_eem", None)
         interface_on_lower = peripheral.get("interface_on_lower", True)
+        edge_counters_enabled = peripheral.get("edge_counter", False)
 
         assert len(ports) >= 1, 'At least one DIO port is required for DDB generation'
         assert not uses_reference, 'Currently, reference input is not supported for DDB generation'
         assert link_eem is None, 'Currently, link eem is not supported in DDB generation'
         assert interface_on_lower, 'Currently, only interface on lower enabled is supported for DDB generation'
 
-        channel = count(0)
+        ttl_exports = build_standalone_ttl_exports(
+            ports=ports,
+            num_inputs=num_inputs,
+            num_outputs=num_outputs,
+            edge_counters_enabled=edge_counters_enabled,
+        )
 
-        for i in range(num_outputs):
-            if running_output and i == (num_outputs - 1):
-                # skip this channel
+        self.gen("""
+            # Entangler standalone TTL mapping
+            # Physical numbering is by DIO-port order in "ports"; each port contributes
+            # ttl[8*n + 0:8*n + 3] for input-side pads and ttl[8*n + 4:8*n + 7] for
+            # output-side pads. RTIO channels remain in gateware append order.
+        """)
+
+        if running_output:
+            self.gen("""
+                # Note: running_output reserves one physical output-side pad but does
+                # not add a standalone TTL RTIO channel, so there is no extra ttlN export.
+            """)
+
+        for export in ttl_exports:
+            channel = rtio_offset + export.rtio_channel
+            self.gen(
+                '# {pad} -> RTIO channel 0x{channel:06x} -> {name} ({kind})',
+                pad=export.physical_channel.pad_label,
+                channel=channel,
+                name=export.device_name,
+                kind=export.device_kind,
+            )
+            if export.device_kind == "counter":
+                self.gen("""
+                    device_db["{name}"] = {{
+                        "type": "local",
+                        "module": "artiq.coredevice.edge_counter",
+                        "class": "{class_name}",
+                        "arguments": {{"channel": 0x{channel:06x}}},
+                    }}""",
+                         name=export.device_name,
+                         class_name=export.device_class,
+                         channel=channel)
                 continue
-            self.gen("""
-                device_db["{name}"] = {{
-                    "type": "local",
-                    "module": "artiq.coredevice.ttl",
-                    "class": "TTLOut",
-                    "arguments": {{"channel": 0x{channel:06x}}},
-                }}""",
-                     name=self.get_name('ttl'),
-                     channel=rtio_offset + next(channel))
 
-        for _ in range(num_inputs):
-            name = self.get_name('ttl')
+            ttl_index = export.physical_channel.exported_ttl_index
             self.gen("""
                 device_db["{name}"] = {{
                     "type": "local",
                     "module": "artiq.coredevice.ttl",
-                    "class": "TTLInOut",
+                    "class": "{class_name}",
                     "arguments": {{"channel": 0x{channel:06x}}},
                 }}""",
-                     name=name,
-                     channel=rtio_offset + next(channel))
-            self.gen("""
-                device_db["{name}_counter"] = {{
-                    "type": "local",
-                    "module": "artiq.coredevice.edge_counter",
-                    "class": "EdgeCounter",
-                    "arguments": {{"channel": 0x{channel:06x}}},
-                }}""",
-                     name=name,
-                     channel=rtio_offset + next(channel))
+                     name=self._reserve_explicit_name("ttl", ttl_index),
+                     class_name=export.device_class,
+                     channel=channel)
 
         self.gen("""
             device_db["{name}"] = {{
@@ -74,9 +95,9 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
                 }},
             }}""",
                  name=self.get_name("entangler"),
-                 channel=rtio_offset + next(channel))
+                 channel=rtio_offset + len(ttl_exports))
 
-        return next(channel)
+        return len(ttl_exports) + 1
 
 
 if __name__ == "__main__":

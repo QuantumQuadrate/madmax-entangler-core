@@ -54,7 +54,15 @@ With that configuration, the expected physical mapping is:
 - ``output 1 -> dioX[5]``
 
 RTIO channel numbering is still unchanged at the driver level: outputs come first,
-then inputs, then the entangler core channel.
+then the input-side channels and any optional edge-counter channels, then the
+entangler core channel.
+
+The generated standalone TTL names intentionally follow physical DIO numbering
+instead of RTIO append order. For a single 4-input / 4-output DIO bank, the
+device DB exports ``ttl0``-``ttl3`` for the physical input-side pads and
+``ttl4``-``ttl7`` for the physical output-side pads, even though the output RTIO
+channels are created first internally. Optional edge counters use the same
+physical input labels, e.g. ``ttl0_counter``.
 
 ## Authors
 

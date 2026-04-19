@@ -56,8 +56,29 @@ The gateware builder allocates pads from separate pools:
 - the optional ``running_output`` is also taken from the output-pad pool
 
 This preserves the existing RTIO channel numbering seen by the driver and device
-database helpers: outputs are still numbered first, followed by inputs, followed
-by the entangler PHY channel.
+database helpers: outputs are still numbered first, followed by the input-side
+channels and any optional edge-counter channels, followed by the entangler PHY
+channel.
+
+### Standalone TTL Device Names
+
+The generated standalone TTL names intentionally follow physical front-panel DIO
+numbering instead of RTIO append order:
+
+- numbering is assigned by DIO-port order in ``"ports"``
+- each DIO port contributes ``ttl[8*n + 0:8*n + 3]`` for physical input pads
+- each DIO port contributes ``ttl[8*n + 4:8*n + 7]`` for physical output pads
+- edge counters use the matching physical input names, e.g. ``ttl0_counter``
+
+This keeps the dashboard names aligned with the front-panel labels while leaving
+the Entangler driver's internal channel ordering unchanged. For a single
+4-input / 4-output DIO build, the exported names are:
+
+- ``ttl0`` through ``ttl3`` for the physical input pads ``dioX[0:4]``
+- ``ttl4`` through ``ttl7`` for the physical output pads ``dioX[4:8]``
+
+Those names are therefore intentionally different from the RTIO creation order
+shown in the build log.
 
 ### 2-Input / 2-Output Configuration
 
