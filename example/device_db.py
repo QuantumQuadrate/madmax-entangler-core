@@ -4,6 +4,7 @@ from entangler.config import settings
 # Get default settings from entangler package's settings.toml
 # change if your JSON file has this set
 using_running_output = False
+using_edge_counter = True
 
 # Number of I/O from settings.toml
 num_outputs = settings.NUM_OUTPUT_CHANNELS
@@ -18,14 +19,17 @@ device_db = {
     },
     "entangler": {
         "type": "local",
-        "module": "entangler.driver",
-        "class": "Entangler",
+        "module": "entangler.atom_photon_driver",
+        "class": "AtomPhotonEntangler",
         "arguments": {
             # NOTE: channels are 0-indexed
-            "channel": (num_outputs + num_inputs - 1)
+            "channel": (
+                num_outputs
+                + (num_inputs * (2 if using_edge_counter else 1))
+                - 1
+            )
             if using_running_output
-            else (num_inputs + num_outputs),
-            "is_master": True,
+            else num_outputs + (num_inputs * (2 if using_edge_counter else 1)),
         },
         "comments": [
             "Change the channel to match console when building gateware. "
@@ -37,6 +41,7 @@ device_db = {
 }
 
 # Add TTL drivers for each I/O in the example.
+rtio_channel = 0
 for i in range(num_outputs + num_inputs):
     if i < num_outputs:
         if i == (num_outputs - 1) and using_running_output:
@@ -46,17 +51,23 @@ for i in range(num_outputs + num_inputs):
             "type": "local",
             "module": "artiq.coredevice.ttl",
             "class": "TTLOut",
-            "arguments": {"channel": i},
+            "arguments": {"channel": rtio_channel},
         }
+        rtio_channel += 1
     else:
-        if using_running_output:
-            # -1 to skip running_output channel
-            channel = i - 1
-        else:
-            channel = i
+        channel = rtio_channel
         device_db["in{}-{}".format(i // 8, i % 8)] = {
             "type": "local",
             "module": "artiq.coredevice.ttl",
             "class": "TTLInOut",
             "arguments": {"channel": channel},
         }
+        rtio_channel += 1
+        if using_edge_counter:
+            device_db["in{}-{}_counter".format(i // 8, i % 8)] = {
+                "type": "local",
+                "module": "artiq.coredevice.edge_counter",
+                "class": "EdgeCounter",
+                "arguments": {"channel": rtio_channel},
+            }
+            rtio_channel += 1

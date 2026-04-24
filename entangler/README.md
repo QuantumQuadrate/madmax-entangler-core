@@ -16,20 +16,15 @@ You simply start a Nix shell ``nix-shell ./nix/entangler-shell-dev.nix``, and th
 
 ### Device Database Entry
 
-To use the Entangler in your experiment code, you need to add it to the device database
-``device_db.py``. You must find the RTIO channel for the ``Entangler`` (check the build log),
-and fill that in the appropriate spot below:
+On the atom-photon parity redesign branch, ``type: "entangler"`` in the Kasli
+JSON builds the atom-photon parity PHY. The corresponding device DB entry is:
 
 ```python
-# In device_db.py:
-{
-    ...
-    "entangler": {
-        "type": "local",
-        "module": "entangler.driver",
-        "class": "Entangler",
-        "arguments": {"channel": YOUR_CHANNEL_HERE, "is_master": True},
-    },
+device_db["entangler"] = {
+    "type": "local",
+    "module": "entangler.atom_photon_driver",
+    "class": "AtomPhotonEntangler",
+    "arguments": {"channel": YOUR_CHANNEL_HERE},
 }
 ```
 
@@ -116,7 +111,13 @@ input-pad pool after the entangler inputs. Likewise, enabling ``uses_reference``
 or ``running_output`` consumes one additional input-side or output-side pad,
 respectively.
 
-### Master Entangler -> Slave Entangler Communication
+In atom-photon parity mode, keep ``uses_reference`` disabled; only
+``running_output`` remains relevant.
+
+### Legacy Master Entangler -> Slave Entangler Communication
+
+This section applies to the legacy pattern-matcher core. Atom-photon parity mode
+rejects ``link_eem`` and does not use inter-Kasli synchronization pins.
 
 5 pins (Oxford) or 4 pins (UMD) are used for Master <-> Slave entangler communication. These must be connected
 to correctly synchronize the two devices/gateware modules.

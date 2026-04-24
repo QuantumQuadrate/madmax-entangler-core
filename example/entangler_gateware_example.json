@@ -8,12 +8,14 @@
     "peripherals": [
         {
             "type": "entangler",
+            "mode": "atom_photon_parity",
             "ports": [
                 0,
                 1
             ],
             "running_output": false,
-            "uses_reference": false
+            "uses_reference": false,
+            "edge_counter": true
         }
     ]
 }

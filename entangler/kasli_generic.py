@@ -21,7 +21,7 @@ from migen.build.generic_platform import IOStandard
 from migen.build.generic_platform import Pins
 from migen.build.generic_platform import Subsignal
 
-import entangler.phy
+import entangler.atom_photon_phy
 from entangler.config import settings as entangler_settings
 from entangler.gateware.io_mapping import DIO_INPUT_INDICES
 from entangler.gateware.io_mapping import DIO_OUTPUT_INDICES
@@ -46,22 +46,27 @@ else:
 
 
 def peripheral_entangler(module, peripheral: typing.Dict[str, list], **kwargs):
-    """Add an Ion-Photon entangling gateware device to an ARTIQ SoC.
+    """Add the atom-photon parity entangler gateware device to an ARTIQ SoC.
 
     Expected format:
         {
             "type": "entangler",
             "ports": [list of ints],
-            {OPTIONAL} "uses_reference": bool,
+            {OPTIONAL} "mode": "atom_photon_parity",
             {OPTIONAL} "running_output": bool
-            {OPTIONAL} "link_eem": int,
-            {OPTIONAL} "interface_on_lower": bool,
             {OPTIONAL} "edge_counter": bool,
         }
 
     More details in :class:`EntanglerEEM`.
     """
+    mode = peripheral.get("mode", "atom_photon_parity")
+    if mode != "atom_photon_parity":
+        raise ValueError("Only atom_photon_parity entangler mode is enabled here")
     using_ref = peripheral.get("uses_reference", False)
+    if using_ref:
+        raise ValueError("atom_photon_parity mode does not support uses_reference")
+    if peripheral.get("link_eem") is not None:
+        raise ValueError("atom_photon_parity mode does not use link_eem")
     running_signal = peripheral.get("running_output", False)
     num_inputs = entangler_settings.NUM_ENTANGLER_INPUT_SIGNALS
     num_outputs = entangler_settings.NUM_OUTPUT_CHANNELS
@@ -71,14 +76,8 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list], **kwargs):
     if running_signal:
         num_outputs += 1
 
-    num_eem = len(peripheral["ports"]) + (
-        1 if peripheral.get("link_eem") is not None else 0
-    )
-    if peripheral.get("link_eem") is not None:
-        # Using inter-Kasli/Entangler communication
-        num_link_pins = 5 if using_ref else 4
-    else:
-        num_link_pins = 0
+    num_eem = len(peripheral["ports"])
+    num_link_pins = 0
 
     if (num_eem * 8) < num_inputs + num_outputs + num_link_pins:
         _LOGGER.warning(
@@ -91,11 +90,11 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list], **kwargs):
     EntanglerEEM.add_std(
         module,
         eem_dio=peripheral["ports"],
-        eem_interface=peripheral.get("link_eem"),
+        eem_interface=None,
         uses_reference=using_ref,
         running_output=running_signal,
         interface_on_lower=peripheral.get("interface_on_lower", True),
-        edge_counter_cls=EDGE_COUNTER_CLS if peripheral.get("edge_counter") else None
+        edge_counter_cls=EDGE_COUNTER_CLS if peripheral.get("edge_counter") else None,
     )
 
 
@@ -254,7 +253,7 @@ class EntanglerEEM(eem_mod._EEM):
             interface_on_lower: bool = True,
             edge_counter_cls: typing.Optional[typing.Type[EDGE_COUNTER_CLS]] = None
     ):
-        """Add an Entangler PHY to a Kasli gateware module.
+        """Add the atom-photon parity Entangler PHY to a Kasli gateware module.
 
         Args:
             target (Module): The gateware module the Entangler will be added to.
@@ -291,6 +290,11 @@ class EntanglerEEM(eem_mod._EEM):
 
             Built liberally off Oxford's draft EEM code, though greatly extended.
         """
+        if uses_reference:
+            raise ValueError("atom-photon parity mode does not support reference input")
+        if eem_interface is not None:
+            raise ValueError("atom-photon parity mode does not support link_eem")
+
         cls.add_extension(
             target,
             eem_dio,
@@ -594,18 +598,21 @@ class EntanglerEEM(eem_mod._EEM):
         else:
             if_pads = None
 
-        # *** Add PHYs to Entangler gateware ***
-        phy = entangler.phy.Entangler(
-            core_link_pads=if_pads,
+        # *** Add PHYs to atom-photon Entangler gateware ***
+        phy = entangler.atom_photon_phy.AtomPhotonParity(
+            core_link_pads=None,
             output_pads=output_pads,
             passthrough_sigs=output_sigs,
             input_phys=input_phys,
-            reference_phy=reference_phy,
+            reference_phy=None,
             simulate=False,
         )
         target.submodules += phy
         target.rtio_channels.append(rtio.Channel.from_phy(phy))
-        _LOGGER.info("Added Entangler PHY on channel %i", len(target.rtio_channels) - 1)
+        _LOGGER.info(
+            "Added atom-photon Entangler PHY on channel %i",
+            len(target.rtio_channels) - 1,
+        )
 
         unused_input_pads = list(input_pads_iter)
         if unused_input_pads:

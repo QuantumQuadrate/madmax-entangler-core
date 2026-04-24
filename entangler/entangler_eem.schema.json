@@ -29,6 +29,12 @@
                                 },
                                 "minItems": 1
                             },
+                            "mode": {
+                                "enum": [
+                                    "atom_photon_parity"
+                                ],
+                                "default": "atom_photon_parity"
+                            },
                             "uses_reference": {
                                 "type": "boolean",
                                 "default": false

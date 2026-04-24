@@ -6,7 +6,7 @@ from typing import Any
 
 # NOTE: these imports are safe because they live in the entangler repo.
 from entangler.config import settings as entangler_settings
-import entangler.phy
+import entangler.atom_photon_phy
 
 
 def peripheral_entangler(
@@ -25,7 +25,7 @@ def peripheral_entangler(
     return EntanglerEEM(
         core=core_device,
         core_module=module,
-        phy_cls=entangler.phy.Entangler,
+        phy_cls=entangler.atom_photon_phy.AtomPhotonParity,
         # map your JSON fields -> constructor args
         ports=description["ports"],
         **entangler_settings,
