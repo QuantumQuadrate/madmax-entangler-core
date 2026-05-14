@@ -24,6 +24,25 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
         link_eem = peripheral.get("link_eem", None)
         interface_on_lower = peripheral.get("interface_on_lower", True)
         edge_counters_enabled = peripheral.get("edge_counter", False)
+        logic_mode = peripheral.get("logic_mode", "legacy")
+        driver_module = "entangler.driver"
+        driver_class = "Entangler"
+        driver_args = """
+                    "channel": 0x{channel:06x},
+                    "is_master": True,
+        """
+        if logic_mode == "and_nand_test":
+            driver_module = "entangler.and_nand_test_driver"
+            driver_class = "AndNandTestEntangler"
+            driver_args = """
+                    "channel": 0x{channel:06x},
+        """
+        elif logic_mode == "atom_photon_parity":
+            driver_module = "entangler.atom_photon_parity_driver"
+            driver_class = "AtomPhotonParityEntangler"
+            driver_args = """
+                    "channel": 0x{channel:06x},
+        """
 
         assert len(ports) >= 1, 'At least one DIO port is required for DDB generation'
         assert not uses_reference, 'Currently, reference input is not supported for DDB generation'
@@ -87,14 +106,16 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
         self.gen("""
             device_db["{name}"] = {{
                 "type": "local",
-                "module": "entangler.driver",
-                "class": "Entangler",
+                "module": "{module}",
+                "class": "{class_name}",
                 "arguments": {{
-                    "channel": 0x{channel:06x},
-                    "is_master": True,
+{arguments}
                 }},
             }}""",
                  name=self.get_name("entangler"),
+                 module=driver_module,
+                 class_name=driver_class,
+                 arguments=driver_args.format(channel=rtio_offset + len(ttl_exports)),
                  channel=rtio_offset + len(ttl_exports))
 
         return len(ttl_exports) + 1

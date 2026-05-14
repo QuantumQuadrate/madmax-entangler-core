@@ -48,6 +48,14 @@
                             "edge_counter": {
                                 "type": "boolean",
                                 "default": false
+                            },
+                            "logic_mode": {
+                                "enum": [
+                                    "legacy",
+                                    "and_nand_test",
+                                    "atom_photon_parity"
+                                ],
+                                "default": "legacy"
                             }
                         },
                         "required": [

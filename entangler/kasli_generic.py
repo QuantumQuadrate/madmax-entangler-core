@@ -57,10 +57,32 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list], **kwargs):
             {OPTIONAL} "link_eem": int,
             {OPTIONAL} "interface_on_lower": bool,
             {OPTIONAL} "edge_counter": bool,
+            {OPTIONAL} "logic_mode": "legacy" | "and_nand_test" | "atom_photon_parity",
         }
 
     More details in :class:`EntanglerEEM`.
     """
+    logic_mode = peripheral.get("logic_mode", "legacy")
+    phy_cls = entangler.phy.Entangler
+    if logic_mode == "and_nand_test":
+        from entangler.and_nand_test_phy import AndNandTestEntangler
+
+        if peripheral.get("uses_reference", False):
+            raise ValueError("and_nand_test does not use a reference input")
+        if peripheral.get("link_eem") is not None:
+            raise ValueError("and_nand_test does not support inter-Kasli links")
+        phy_cls = AndNandTestEntangler
+    elif logic_mode == "atom_photon_parity":
+        from entangler.atom_photon_parity_phy import AtomPhotonParityEntangler
+
+        if peripheral.get("uses_reference", False):
+            raise ValueError("atom_photon_parity does not use a reference input")
+        if peripheral.get("link_eem") is not None:
+            raise ValueError("atom_photon_parity does not support inter-Kasli links")
+        phy_cls = AtomPhotonParityEntangler
+    elif logic_mode != "legacy":
+        raise ValueError("Unsupported entangler logic_mode {!r}".format(logic_mode))
+
     using_ref = peripheral.get("uses_reference", False)
     running_signal = peripheral.get("running_output", False)
     num_inputs = entangler_settings.NUM_ENTANGLER_INPUT_SIGNALS
@@ -95,7 +117,9 @@ def peripheral_entangler(module, peripheral: typing.Dict[str, list], **kwargs):
         uses_reference=using_ref,
         running_output=running_signal,
         interface_on_lower=peripheral.get("interface_on_lower", True),
-        edge_counter_cls=EDGE_COUNTER_CLS if peripheral.get("edge_counter") else None
+        edge_counter_cls=EDGE_COUNTER_CLS if peripheral.get("edge_counter") else None,
+        phy_cls=phy_cls,
+        logic_mode=logic_mode,
     )
 
 
@@ -252,7 +276,9 @@ class EntanglerEEM(eem_mod._EEM):
             uses_reference: bool = False,
             running_output: bool = False,
             interface_on_lower: bool = True,
-            edge_counter_cls: typing.Optional[typing.Type[EDGE_COUNTER_CLS]] = None
+            edge_counter_cls: typing.Optional[typing.Type[EDGE_COUNTER_CLS]] = None,
+            phy_cls: typing.Any = entangler.phy.Entangler,
+            logic_mode: str = "legacy",
     ):
         """Add an Entangler PHY to a Kasli gateware module.
 
@@ -279,6 +305,10 @@ class EntanglerEEM(eem_mod._EEM):
                 Defaults to True.
             edge_counter_cls (optional): Add edge counters to input pints.
                 Defaults to no edge counters.
+            phy_cls (optional): RTIO wrapper class to instantiate. Defaults to the
+                legacy Entangler PHY.
+            logic_mode (str): Selected custom logic mode. ``legacy`` preserves the
+                original wiring.
 
         Note:
             Physical DIO routing follows a fixed split on each EEM bank:
@@ -511,6 +541,7 @@ class EntanglerEEM(eem_mod._EEM):
 
         # Create specified # of inputs, add them to list for Entangler creation.
         input_phys = []
+        input_states = []
         input_rtio_channels = []
         edge_counter_channels = []
         for i, (pads, eem, physical_index) in enumerate(allocated_input_pads):
@@ -522,6 +553,7 @@ class EntanglerEEM(eem_mod._EEM):
                 )
             phy = io_class["input"](pads.p, pads.n)
             target.submodules += phy
+            input_states.append(getattr(phy, "input_state", None))
             # only add num_entangler_inputs -> input_phys -> Entanglercore
             if i < num_entangler_inputs:
                 input_phys.append(phy.rtlink.i)
@@ -595,14 +627,30 @@ class EntanglerEEM(eem_mod._EEM):
             if_pads = None
 
         # *** Add PHYs to Entangler gateware ***
-        phy = entangler.phy.Entangler(
-            core_link_pads=if_pads,
-            output_pads=output_pads,
-            passthrough_sigs=output_sigs,
-            input_phys=input_phys,
-            reference_phy=reference_phy,
-            simulate=False,
-        )
+        if logic_mode == "and_nand_test":
+            phy = phy_cls(
+                output_pads=output_pads,
+                passthrough_sigs=output_sigs,
+                input_phys=input_phys,
+                input_states=input_states[:2],
+                simulate=False,
+            )
+        elif logic_mode == "atom_photon_parity":
+            phy = phy_cls(
+                output_pads=output_pads,
+                passthrough_sigs=output_sigs,
+                input_phys=input_phys,
+                simulate=False,
+            )
+        else:
+            phy = phy_cls(
+                core_link_pads=if_pads,
+                output_pads=output_pads,
+                passthrough_sigs=output_sigs,
+                input_phys=input_phys,
+                reference_phy=reference_phy,
+                simulate=False,
+            )
         target.submodules += phy
         target.rtio_channels.append(rtio.Channel.from_phy(phy))
         _LOGGER.info("Added Entangler PHY on channel %i", len(target.rtio_channels) - 1)
