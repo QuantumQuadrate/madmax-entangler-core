@@ -23,6 +23,21 @@ from entangler.atom_photon_parity_registers import STATUS_OUTCOME_SHIFT
 _LOGGER = logging.getLogger(__name__)
 
 
+class _InputStateEdgePhy(Module):
+    """Minimal rising-edge timestamp source for overlay DIO input states."""
+
+    def __init__(self, input_state):
+        self.fine_ts = Signal(3)
+        self.stb = Signal()
+
+        input_state_d = Signal()
+        self.sync.rio += [
+            input_state_d.eq(input_state),
+            self.stb.eq(input_state & ~input_state_d),
+            self.fine_ts.eq(0),
+        ]
+
+
 class AtomPhotonParityEntangler(Module):
     """RTIO-facing wrapper for :class:`AtomPhotonParityCore`."""
 
@@ -31,11 +46,13 @@ class AtomPhotonParityEntangler(Module):
         output_pads,
         passthrough_sigs: typing.Sequence[Signal],
         input_phys: typing.Sequence[typing.Any],
+        input_states: typing.Sequence[Signal] | None = None,
+        output_overrides: typing.Sequence[typing.Sequence[Signal]] | None = None,
         simulate: bool = False,
     ):
         assert len(input_phys) >= 2
 
-        if not simulate:
+        if not simulate and output_overrides is None:
             assert output_pads is not None
             assert passthrough_sigs is not None
 
@@ -44,11 +61,33 @@ class AtomPhotonParityEntangler(Module):
             rtlink.IInterface(data_width=32, timestamped=True),
         )
 
+        spcm_phys = input_phys[:2]
+        if input_states is not None:
+            if len(input_states) < 2:
+                raise ValueError("Not enough input states for atom_photon_parity")
+            if any(state is None for state in input_states[:2]):
+                _LOGGER.warning(
+                    "atom_photon_parity instantiated without DIO input_state "
+                    "signals; falling back to RTIO input event strobes"
+                )
+            else:
+                spcm_phys = [_InputStateEdgePhy(state) for state in input_states[:2]]
+                self.submodules += spcm_phys
+
         self.submodules.core = ClockDomainsRenamer("rio")(
-            AtomPhotonParityCore(input_phys[:2])
+            AtomPhotonParityCore(spcm_phys)
         )
 
-        if not simulate:
+        if output_overrides is not None:
+            if len(output_overrides) < len(self.core.outputs):
+                raise ValueError("Not enough output overrides for atom_photon_parity")
+            for index, overrides in enumerate(output_overrides[: len(self.core.outputs)]):
+                override_en, override_o = overrides[:2]
+                self.comb += [
+                    override_en.eq(self.core.enable),
+                    override_o.eq(self.core.outputs[index]),
+                ]
+        elif not simulate:
             if len(output_pads) < len(self.core.outputs):
                 raise ValueError("Not enough output pads for atom_photon_parity")
             if len(passthrough_sigs) < len(self.core.outputs):

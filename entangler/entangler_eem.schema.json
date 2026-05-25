@@ -37,6 +37,10 @@
                                 "type": "boolean",
                                 "default": false
                             },
+                            "overlay": {
+                                "type": "boolean",
+                                "default": false
+                            },
                             "link_eem": {
                                 "type": "integer",
                                 "minimum": 0

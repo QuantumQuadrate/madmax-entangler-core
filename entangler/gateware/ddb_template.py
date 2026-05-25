@@ -13,6 +13,15 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
         self.counts[ty] = max(self.counts[ty], index + 1)
         return "{}{}".format(ty, index)
 
+    def _has_overlapping_dio(self, peripheral):
+        entangler_ports = set(peripheral["ports"])
+        for candidate in self.master_description["peripherals"]:
+            if candidate is peripheral or candidate.get("type") != "dio":
+                continue
+            if entangler_ports & set(candidate.get("ports", [])):
+                return True
+        return False
+
     def process_entangler(self, rtio_offset, peripheral):
         from entangler.config import settings
         num_outputs = settings.NUM_OUTPUT_CHANNELS
@@ -25,6 +34,7 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
         interface_on_lower = peripheral.get("interface_on_lower", True)
         edge_counters_enabled = peripheral.get("edge_counter", False)
         logic_mode = peripheral.get("logic_mode", "legacy")
+        overlay = peripheral.get("overlay", False) or self._has_overlapping_dio(peripheral)
         driver_module = "entangler.driver"
         driver_class = "Entangler"
         driver_args = """
@@ -45,63 +55,73 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
         """
 
         assert len(ports) >= 1, 'At least one DIO port is required for DDB generation'
-        assert not uses_reference, 'Currently, reference input is not supported for DDB generation'
         assert link_eem is None, 'Currently, link eem is not supported in DDB generation'
-        assert interface_on_lower, 'Currently, only interface on lower enabled is supported for DDB generation'
+        if not overlay:
+            assert not uses_reference, 'Currently, reference input is not supported for standalone DDB generation'
+            assert interface_on_lower, 'Currently, only interface on lower enabled is supported for standalone DDB generation'
 
-        ttl_exports = build_standalone_ttl_exports(
-            ports=ports,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
-            edge_counters_enabled=edge_counters_enabled,
-        )
-
-        self.gen("""
-            # Entangler standalone TTL mapping
-            # Physical numbering is by DIO-port order in "ports"; each port contributes
-            # ttl[8*n + 0:8*n + 3] for input-side pads and ttl[8*n + 4:8*n + 7] for
-            # output-side pads. RTIO channels remain in gateware append order.
-        """)
-
-        if running_output:
+        if overlay:
             self.gen("""
-                # Note: running_output reserves one physical output-side pad but does
-                # not add a standalone TTL RTIO channel, so there is no extra ttlN export.
+                # Entangler overlays an already-declared DIO card. The normal ttlN
+                # exports come from the DIO peripheral; this entry only adds the
+                # Entangler control RTIO channel.
+            """)
+            ttl_export_count = 0
+        else:
+            ttl_exports = build_standalone_ttl_exports(
+                ports=ports,
+                num_inputs=num_inputs,
+                num_outputs=num_outputs,
+                edge_counters_enabled=edge_counters_enabled,
+            )
+
+            self.gen("""
+                # Entangler standalone TTL mapping
+                # Physical numbering is by DIO-port order in "ports"; each port contributes
+                # ttl[8*n + 0:8*n + 3] for input-side pads and ttl[8*n + 4:8*n + 7] for
+                # output-side pads. RTIO channels remain in gateware append order.
             """)
 
-        for export in ttl_exports:
-            channel = rtio_offset + export.rtio_channel
-            self.gen(
-                '# {pad} -> RTIO channel 0x{channel:06x} -> {name} ({kind})',
-                pad=export.physical_channel.pad_label,
-                channel=channel,
-                name=export.device_name,
-                kind=export.device_kind,
-            )
-            if export.device_kind == "counter":
+            if running_output:
+                self.gen("""
+                    # Note: running_output reserves one physical output-side pad but does
+                    # not add a standalone TTL RTIO channel, so there is no extra ttlN export.
+                """)
+
+            for export in ttl_exports:
+                channel = rtio_offset + export.rtio_channel
+                self.gen(
+                    '# {pad} -> RTIO channel 0x{channel:06x} -> {name} ({kind})',
+                    pad=export.physical_channel.pad_label,
+                    channel=channel,
+                    name=export.device_name,
+                    kind=export.device_kind,
+                )
+                if export.device_kind == "counter":
+                    self.gen("""
+                        device_db["{name}"] = {{
+                            "type": "local",
+                            "module": "artiq.coredevice.edge_counter",
+                            "class": "{class_name}",
+                            "arguments": {{"channel": 0x{channel:06x}}},
+                        }}""",
+                             name=export.device_name,
+                             class_name=export.device_class,
+                             channel=channel)
+                    continue
+
+                ttl_index = export.physical_channel.exported_ttl_index
                 self.gen("""
                     device_db["{name}"] = {{
                         "type": "local",
-                        "module": "artiq.coredevice.edge_counter",
+                        "module": "artiq.coredevice.ttl",
                         "class": "{class_name}",
                         "arguments": {{"channel": 0x{channel:06x}}},
                     }}""",
-                         name=export.device_name,
+                         name=self._reserve_explicit_name("ttl", ttl_index),
                          class_name=export.device_class,
                          channel=channel)
-                continue
-
-            ttl_index = export.physical_channel.exported_ttl_index
-            self.gen("""
-                device_db["{name}"] = {{
-                    "type": "local",
-                    "module": "artiq.coredevice.ttl",
-                    "class": "{class_name}",
-                    "arguments": {{"channel": 0x{channel:06x}}},
-                }}""",
-                     name=self._reserve_explicit_name("ttl", ttl_index),
-                     class_name=export.device_class,
-                     channel=channel)
+            ttl_export_count = len(ttl_exports)
 
         self.gen("""
             device_db["{name}"] = {{
@@ -115,10 +135,10 @@ class PeripheralManager(artiq.frontend.artiq_ddb_template.PeripheralManager):
                  name=self.get_name("entangler"),
                  module=driver_module,
                  class_name=driver_class,
-                 arguments=driver_args.format(channel=rtio_offset + len(ttl_exports)),
-                 channel=rtio_offset + len(ttl_exports))
+                 arguments=driver_args.format(channel=rtio_offset + ttl_export_count),
+                 channel=rtio_offset + ttl_export_count)
 
-        return len(ttl_exports) + 1
+        return ttl_export_count + 1
 
 
 if __name__ == "__main__":

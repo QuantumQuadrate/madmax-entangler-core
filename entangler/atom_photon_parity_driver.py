@@ -8,6 +8,7 @@ from artiq.coredevice.rtio import rtio_input_timestamped_data
 from artiq.coredevice.rtio import rtio_output
 from artiq.language.core import delay_mu
 from artiq.language.core import kernel
+from artiq.language.core import now_mu
 from artiq.language.types import TInt32
 from artiq.language.types import TInt64
 from artiq.language.types import TTuple
@@ -23,6 +24,7 @@ class AtomPhotonParityEntangler:
         "core",
         "channel",
         "ref_period_mu",
+        "csr_read_spacing_mu",
         "_ADDRESS_READ",
         "_ADDRESS_WRITE",
     }
@@ -31,6 +33,7 @@ class AtomPhotonParityEntangler:
         self.core = dmgr.get(core_device)
         self.channel = channel
         self.ref_period_mu = self.core.seconds_to_mu(self.core.coarse_ref_period)
+        self.csr_read_spacing_mu = self.core.seconds_to_mu(2e-6)
         self._ADDRESS_READ = ADDRESS_READ
         self._ADDRESS_WRITE = ADDRESS_WRITE
 
@@ -42,37 +45,42 @@ class AtomPhotonParityEntangler:
     @kernel
     def _read(self, addr: TInt32) -> TInt32:
         rtio_output((self.channel << 8) | addr, 0)
-        return rtio_input_data(self.channel)
+        delay_mu(self.csr_read_spacing_mu)
+        value = rtio_input_data(self.channel)
+        delay_mu(self.csr_read_spacing_mu)
+        return value
 
     @kernel
     def init(self):
         self.clear()
-        self.configure(True)
+        self.configure(1)
 
     @kernel
-    def configure(self, enable: bool = True):
-        data = 1 if enable else 0
-        self._write(self._ADDRESS_WRITE.CONFIG, data)
+    def configure(self, enable: TInt32 = 1):
+        self._write(self._ADDRESS_WRITE.CONFIG, enable & 1)
 
     @kernel
     def clear(self):
         self._write(self._ADDRESS_WRITE.CONTROL, 0b10)
 
     @kernel
-    def set_run_length_mu(self, run_length_mu: TInt32):
-        self._write(self._ADDRESS_WRITE.RUN_LENGTH, run_length_mu >> 3)
+    def set_run_length_mu(self, run_length_mu: TInt64):
+        self._write(self._ADDRESS_WRITE.RUN_LENGTH, np.int32(run_length_mu >> 3))
 
     @kernel
     def set_num_attempts(self, attempts: TInt32):
         self._write(self._ADDRESS_WRITE.NUM_ATTEMPTS, attempts)
 
     @kernel
-    def set_attempt_period_mu(self, period_mu: TInt32):
-        self._write(self._ADDRESS_WRITE.ATTEMPT_PERIOD, period_mu >> 3)
+    def set_attempt_period_mu(self, period_mu: TInt64):
+        self._write(self._ADDRESS_WRITE.ATTEMPT_PERIOD, np.int32(period_mu >> 3))
 
     @kernel
-    def set_gate_mu(self, start_mu: TInt32, stop_mu: TInt32):
-        self._write(self._ADDRESS_WRITE.GATE, ((stop_mu & 0xFFFF) << 16) | (start_mu & 0xFFFF))
+    def set_gate_mu(self, start_mu: TInt64, stop_mu: TInt64):
+        self._write(
+            self._ADDRESS_WRITE.GATE,
+            np.int32(((stop_mu & 0xFFFF) << 16) | (start_mu & 0xFFFF)),
+        )
 
     @kernel
     def set_output_states(self, idle_states: TInt32, active_states: TInt32):
@@ -80,14 +88,14 @@ class AtomPhotonParityEntangler:
         self._write(self._ADDRESS_WRITE.ACTIVE_STATES, active_states)
 
     @kernel
-    def set_branch_done_delay_mu(self, delay_mu_value: TInt32):
-        self._write(self._ADDRESS_WRITE.BRANCH_DONE_DELAY, delay_mu_value >> 3)
+    def set_branch_done_delay_mu(self, delay_mu_value: TInt64):
+        self._write(self._ADDRESS_WRITE.BRANCH_DONE_DELAY, np.int32(delay_mu_value >> 3))
 
     @kernel
-    def set_attempt_window_mu(self, output: TInt32, start_mu: TInt32, stop_mu: TInt32):
+    def set_attempt_window_mu(self, output: TInt32, start_mu: TInt64, stop_mu: TInt64):
         self._write(
             self._ADDRESS_WRITE.ATTEMPT_WINDOW_BASE + output,
-            (((stop_mu >> 3) & 0xFFFF) << 16) | ((start_mu >> 3) & 0xFFFF),
+            np.int32((((stop_mu >> 3) & 0xFFFF) << 16) | ((start_mu >> 3) & 0xFFFF)),
         )
 
     @kernel
@@ -95,21 +103,26 @@ class AtomPhotonParityEntangler:
         self,
         branch: TInt32,
         output: TInt32,
-        start_mu: TInt32,
-        stop_mu: TInt32,
+        start_mu: TInt64,
+        stop_mu: TInt64,
     ):
         base = self._ADDRESS_WRITE.BRANCH0_WINDOW_BASE
         if branch == 1:
             base = self._ADDRESS_WRITE.BRANCH1_WINDOW_BASE
         self._write(
             base + output,
-            (((stop_mu >> 3) & 0xFFFF) << 16) | ((start_mu >> 3) & 0xFFFF),
+            np.int32((((stop_mu >> 3) & 0xFFFF) << 16) | ((start_mu >> 3) & 0xFFFF)),
         )
 
     @kernel
     def start(self) -> TTuple([TInt64, TInt32]):
         self._write(self._ADDRESS_WRITE.CONTROL, 0b01)
         return rtio_input_timestamped_data(np.int64(-1), self.channel)
+
+    @kernel
+    def start_for_mu(self, timeout_mu: TInt64) -> TTuple([TInt64, TInt32]):
+        self._write(self._ADDRESS_WRITE.CONTROL, 0b01)
+        return rtio_input_timestamped_data(now_mu() + timeout_mu, self.channel)
 
     @kernel
     def get_status(self) -> TInt32:

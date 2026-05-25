@@ -26,14 +26,17 @@ from test_atom_photon_parity_core import PhotonPhy  # noqa: E402
 class ParityPhyHarness(migen.Module):
     """RTIO wrapper simulation harness."""
 
-    def __init__(self):
+    def __init__(self, *, use_input_states=False):
         self.counter = migen.Signal(11)
         self.input_phys = [PhotonPhy(self.counter) for _ in range(4)]
         self.submodules += self.input_phys
+        self.input_states = [migen.Signal() for _ in range(2)]
+        input_states = self.input_states if use_input_states else None
         self.submodules.core = AtomPhotonParityEntangler(
             output_pads=None,
             passthrough_sigs=None,
             input_phys=self.input_phys,
+            input_states=input_states,
             simulate=True,
         )
         self.comb += self.counter.eq(self.core.core.m)
@@ -78,5 +81,41 @@ def test_phy_register_run_and_readback():
         assert not (status & (1 << 3))
         assert outcome == int(OUTCOME.SPCM0_ONLY)
         assert click_ts == 24
+
+    run_simulation(dut, bench(), clocks=ARTIQ_CLOCKS)
+
+
+def test_phy_overlay_input_states_generate_helper_edges():
+    dut = ParityPhyHarness(use_input_states=True)
+
+    def bench():
+        yield from dut.write(ADDRESS_WRITE.CONFIG, 1)
+        yield from dut.write(ADDRESS_WRITE.RUN_LENGTH, 80)
+        yield from dut.write(ADDRESS_WRITE.NUM_ATTEMPTS, 1)
+        yield from dut.write(ADDRESS_WRITE.ATTEMPT_PERIOD, 16)
+        yield from dut.write(ADDRESS_WRITE.GATE, (48 << 16) | 8)
+        yield from dut.write(ADDRESS_WRITE.IDLE_STATES, 0b1111)
+        yield from dut.write(ADDRESS_WRITE.ACTIVE_STATES, 0b1110)
+        yield from dut.write(ADDRESS_WRITE.BRANCH_DONE_DELAY, 12)
+        yield from dut.write(ADDRESS_WRITE.BRANCH0_WINDOW_BASE, (8 << 16) | 5)
+        yield from dut.write(ADDRESS_WRITE.CONTROL, 0b01)
+
+        for _ in range(3):
+            yield
+        yield dut.input_states[0].eq(1)
+        yield
+        yield dut.input_states[0].eq(0)
+
+        yield from wait_until(dut.core.core.done_stb, max_cycles=80)
+        yield
+
+        status = yield from dut.read(ADDRESS_READ.STATUS)
+        outcome = yield from dut.read(ADDRESS_READ.OUTCOME)
+        click_ts = yield from dut.read(ADDRESS_READ.CLICK_TS)
+
+        assert status & (1 << 2)
+        assert not (status & (1 << 3))
+        assert outcome == int(OUTCOME.SPCM0_ONLY)
+        assert click_ts != 0
 
     run_simulation(dut, bench(), clocks=ARTIQ_CLOCKS)

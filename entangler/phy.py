@@ -33,6 +33,7 @@ class Entangler(Module):
         passthrough_sigs: typing.Sequence[Signal],
         input_phys: typing.Sequence["PHY"],
         reference_phy=None,
+        output_overrides: typing.Sequence[typing.Sequence[Signal]] | None = None,
         simulate: bool = False,
     ):
         """
@@ -88,7 +89,7 @@ class Entangler(Module):
         )
 
         assert len(input_phys) == num_inputs
-        if not simulate:
+        if not simulate and output_overrides is None:
             assert len(core_link_pads) >= 5 if reference_phy is not None else 4
             # +1 for running_output
             assert len(output_pads) in (num_outputs, num_outputs + 1)
@@ -103,9 +104,25 @@ class Entangler(Module):
                 passthrough_sigs,
                 input_phys,
                 reference_phy=reference_phy,
-                simulate=simulate,
+                simulate=simulate or output_overrides is not None,
             )
         )
+
+        if output_overrides is not None:
+            if len(output_overrides) < num_outputs:
+                raise ValueError("Not enough output overrides for entangler")
+            for index, overrides in enumerate(output_overrides[:num_outputs]):
+                override_en, override_o = overrides[:2]
+                self.comb += [
+                    override_en.eq(self.core.enable),
+                    override_o.eq(self.core.sequencers[index].output),
+                ]
+            if len(output_overrides) > num_outputs:
+                override_en, override_o = output_overrides[num_outputs][:2]
+                self.comb += [
+                    override_en.eq(self.core.enable),
+                    override_o.eq(self.core.msm.running),
+                ]
 
         read_en = self.rtlink.o.address[timing_bit_width + 1]  # MSB in address
         write_timings = Signal()

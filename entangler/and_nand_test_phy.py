@@ -32,6 +32,7 @@ class AndNandTestEntangler(Module):
         passthrough_sigs: typing.Sequence[Signal],
         input_phys: typing.Sequence[typing.Any],
         input_states: typing.Sequence[Signal] | None = None,
+        output_overrides: typing.Sequence[typing.Sequence[Signal]] | None = None,
         simulate: bool = False,
     ):
         assert len(input_phys) >= 4
@@ -48,7 +49,7 @@ class AndNandTestEntangler(Module):
             )
             input_states = [Signal(reset=0), Signal(reset=0)]
 
-        if not simulate:
+        if not simulate and output_overrides is None:
             assert output_pads is not None and len(output_pads) >= 4
             assert passthrough_sigs is not None and len(passthrough_sigs) >= 4
 
@@ -61,7 +62,16 @@ class AndNandTestEntangler(Module):
             AndNandTestCore(input_states[:2], input_phys[2:4])
         )
 
-        if not simulate:
+        if output_overrides is not None:
+            if len(output_overrides) < 4:
+                raise ValueError("Not enough output overrides for and_nand_test")
+            for index, overrides in enumerate(output_overrides[:4]):
+                override_en, override_o = overrides[:2]
+                self.comb += [
+                    override_en.eq(self.core.enable),
+                    override_o.eq(self.core.outputs[index]),
+                ]
+        elif not simulate:
             for index, pad in enumerate(output_pads[:4]):
                 self.specials += Instance(
                     "OBUFDS",
