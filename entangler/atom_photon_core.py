@@ -7,7 +7,6 @@ import operator
 import typing
 
 from migen import Cat
-from migen import Const
 from migen import FSM
 from migen import If
 from migen import Module
@@ -15,6 +14,7 @@ from migen import Mux
 from migen import NextState
 from migen import NextValue
 from migen import Signal
+from migen.fhdl.structure import Constant as Const
 
 from entangler.atom_photon_registers import (
     COARSE_COUNTER_WIDTH,

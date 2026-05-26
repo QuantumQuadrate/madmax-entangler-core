@@ -7,12 +7,12 @@ from artiq.gateware.rtio import rtlink
 from migen import Case
 from migen import Cat
 from migen import ClockDomainsRenamer
-from migen import Const
 from migen import If
 from migen import Instance
 from migen import Module
 from migen import Mux
 from migen import Signal
+from migen.fhdl.structure import Constant as Const
 
 from entangler.atom_photon_core import AtomPhotonParityCore
 from entangler.atom_photon_registers import (
@@ -50,6 +50,8 @@ class AtomPhotonParity(Module):
         passthrough_sigs: typing.Sequence[Signal],
         input_phys: typing.Sequence["PHY"],
         reference_phy=None,
+        input_states=None,
+        output_overrides=None,
         simulate: bool = False,
     ):
         if reference_phy is not None:
@@ -61,8 +63,8 @@ class AtomPhotonParity(Module):
         num_outputs = settings.NUM_OUTPUT_CHANNELS
         if num_inputs < 2:
             raise ValueError("atom-photon parity mode requires at least two SPCM inputs")
-        if num_outputs < 8:
-            raise ValueError("atom-photon parity mode expects at least eight outputs")
+        if num_outputs < 4:
+            raise ValueError("atom-photon parity mode expects at least four outputs")
 
         self.enable = Signal()
         self.output_signals = Signal(num_outputs)
@@ -74,8 +76,12 @@ class AtomPhotonParity(Module):
 
         assert len(input_phys) >= 2
         if not simulate:
-            assert len(output_pads) in (num_outputs, num_outputs + 1)
-            assert len(passthrough_sigs) == num_outputs
+            if output_overrides is None:
+                assert len(output_pads) in (num_outputs, num_outputs + 1)
+                assert len(passthrough_sigs) == num_outputs
+            else:
+                assert output_pads in (None, [])
+                assert len(output_overrides) == num_outputs
 
         self.submodules.core = ClockDomainsRenamer("rio")(
             AtomPhotonParityCore(input_phys, num_action_outputs=num_outputs)
@@ -176,13 +182,19 @@ class AtomPhotonParity(Module):
             experiment_outputs.append(value)
         self.comb += action_outputs.eq(Cat(*experiment_outputs))
 
-        if simulate or passthrough_sigs is None:
+        if simulate or passthrough_sigs is None or output_overrides is not None:
             passthrough = Const(0, num_outputs)
         else:
             passthrough = Cat(*passthrough_sigs)
         self.comb += self.output_signals.eq(Mux(self.enable, action_outputs, passthrough))
 
-        if not simulate:
+        if not simulate and output_overrides is not None:
+            for index, (override_en, override_o) in enumerate(output_overrides[:num_outputs]):
+                self.comb += [
+                    override_en.eq(self.enable),
+                    override_o.eq(action_outputs[index]),
+                ]
+        elif not simulate:
             for index, pad in enumerate(output_pads[:num_outputs]):
                 self.specials += Instance(
                     "OBUFDS",
